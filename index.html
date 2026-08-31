@@ -234,7 +234,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 18</span>
+    <span class="pill" id="st-build">BUILD 19</span>
     <span class="pill" id="st-calls">API 0</span>
     <span class="pill" id="st-age">never synced</span>
     <button class="hbtn" id="st-sync">sync now</button>
@@ -746,9 +746,16 @@ function riskFlags(groups){
     const px = g.px;
     if(g.uncovered > 0){
       const e = economics(g);
-      const up = e.breakevens.filter(b => g.px == null || b > g.px).sort((a,b)=>a-b)[0];
+      // The break-even that matters for uncovered calls is the one above the
+      // highest short strike, not simply the next one above spot.
+      const topStrike = Math.max(...g.legs
+        .filter(l=>l.type==="call" && l.side==="short").map(l=>l.strike));
+      const above = e.breakevens.filter(b => b > topStrike);
+      const up = above.length ? Math.max(...above)
+                              : (e.breakevens.length ? Math.max(...e.breakevens) : null);
+      const low = e.breakevens.filter(b => b < topStrike).sort((a,b)=>a-b)[0];
       f.push({lvl:"crit", txt:`${g.sym}: ${g.uncovered} shares of short-call exposure are uncovered.${
-        up ? ` The position turns negative above ${up.toFixed(2)} and the loss grows by ${g.uncovered} dollars for every dollar past it, with no cap.` :
+        up ? ` You are in profit ${low!=null?`between ${low.toFixed(2)} and ${up.toFixed(2)}`:`below ${up.toFixed(2)}`}. Above ${up.toFixed(2)} the loss grows by ${g.uncovered} dollars for every dollar, with no cap.` :
              " Loss above the strike is unbounded and grows one-for-one with the stock."}`});
       if(up && S.history[g.sym]){
         const peak = Math.max(...S.history[g.sym].map(r=>r.c));
