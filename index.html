@@ -234,7 +234,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 12</span>
+    <span class="pill" id="st-build">BUILD 13</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -339,7 +339,7 @@ canvas{display:block;width:100%;height:100%}
         </select></div>
       <div class="frow"><label>Contracts</label><input id="cl-con" inputmode="decimal" placeholder="2"></div>
       <div class="frow"><label>Strike</label><input id="cl-strike" inputmode="decimal" placeholder="optional"></div>
-      <div class="frow"><label>Premium received</label><input id="cl-open" inputmode="decimal" placeholder="per contract, e.g. 331"></div>
+      <div class="frow"><label>Premium received</label><input id="cl-open" inputmode="decimal" placeholder="per share, e.g. 1.33"></div>
       <div class="frow"><label>Closed at</label><input id="cl-close" inputmode="decimal" placeholder="per share, 0 if expired"></div>
       <div class="frow"><label>Date closed</label><input id="cl-date" type="date"></div>
       <div class="frow"><label>Net result</label><input id="cl-net" inputmode="decimal" placeholder="leave blank to compute"></div>
@@ -373,7 +373,7 @@ canvas{display:block;width:100%;height:100%}
       <div class="frow" id="row-con"><label>Contracts</label><input id="leg-con" inputmode="decimal" placeholder="contracts"></div>
       <div class="frow" id="row-strike"><label>Strike</label><input id="leg-strike" inputmode="decimal" placeholder="strike"></div>
       <div class="frow" id="row-exp"><label>Expiry</label><input id="leg-exp" type="date"></div>
-      <div class="frow" id="row-credit"><label>Premium per contract</label><input id="leg-credit" inputmode="decimal" placeholder="per contract"></div>
+      <div class="frow" id="row-credit"><label>Premium per share</label><input id="leg-credit" inputmode="decimal" placeholder="as quoted, e.g. 3.31"></div>
       <div class="frow" id="row-close" style="display:none">
         <label id="leg-close-label">Buy-back price per contract</label>
         <input id="leg-closepx" inputmode="decimal" placeholder="0.00">
@@ -494,7 +494,8 @@ const S = {
   legQuotes: {},
   errors: {},        // panel -> message
   live: false,
-  dataOk: false,     // true only when the last quote fetch actually returned provider data
+  dataOk: false,
+  stale: false,     // true only when the last quote fetch actually returned provider data
   lastError: null,
 };
 
@@ -1141,10 +1142,16 @@ async function refresh(){
     try{
       const q = await fetchQuotes(syms);
       if(!q || !Object.keys(q).length) throw new Error("provider returned an empty response");
-      S.quotes = q; S.dataOk = true; S.lastError = null;
+      S.quotes = q; S.dataOk = true; S.stale = false; S.lastError = null;
     }catch(e){
-      S.dataOk = false; S.lastError = e.message;
-      syms.forEach(s=>S.quotes[s]=demoQuote(s));
+      S.lastError = e.message;
+      const hadReal = Object.values(S.quotes).some(q=>q && q.demo === false);
+      if(hadReal){
+        S.stale = true;                      // rate limit or a blip: hold the last real prices
+      } else {
+        S.dataOk = false; S.stale = false;
+        syms.forEach(s=>S.quotes[s]=demoQuote(s));
+      }
     }
   } else {
     S.dataOk = false; S.lastError = "no API key set";
@@ -1156,8 +1163,12 @@ async function refresh(){
   mode.textContent = S.dataOk ? "LIVE" : "DEMO";
   mode.className = "pill gear " + (S.dataOk ? "live" : "demo");
   const err = $("st-err");
-  if(S.dataOk){ err.style.display = "none"; }
-  else { err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + S.lastError; }
+  if(S.dataOk && !S.stale){ err.style.display = "none"; }
+  else if(S.stale){
+    err.style.display = ""; err.textContent = "LAST GOOD PRICES, NOT REFRESHED — " + S.lastError;
+  } else {
+    err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + S.lastError;
+  }
   $("st-calls").textContent = "API " + API_CALLS;
 
   if(!S.history[S.sym]) await loadHistory();
@@ -1283,7 +1294,7 @@ function openLeg(id){
   $("leg-con").value   = l && l.contracts != null ? l.contracts : "";
   $("leg-strike").value= l && l.strike != null ? l.strike : "";
   $("leg-exp").value   = l && l.expiry ? l.expiry : "";
-  $("leg-credit").value= l && l.credit != null ? l.credit : "";
+  $("leg-credit").value= l && l.credit != null ? (l.credit/100).toFixed(2) : "";
   legFieldsFor($("leg-type").value);
   CLOSING = false;
   $("row-close").style.display = "none";
@@ -1356,7 +1367,7 @@ $("leg-save").onclick = () => {
   } else {
     const contracts = parseFloat($("leg-con").value);
     const strike = parseFloat($("leg-strike").value);
-    const credit = parseFloat($("leg-credit").value);
+    const credit = parseFloat($("leg-credit").value) * 100;   // per share -> per contract
     const expiry = $("leg-exp").value;
     if(!isFinite(contracts) || !isFinite(strike) || !expiry){
       toast("contracts, strike and expiry are all required"); return;
@@ -1410,7 +1421,7 @@ $("cl-save").onclick = () => {
       $("cl-note").textContent = "Contracts and premium received are required."; return; }
     const cp = isFinite(closeP) ? closeP : 0;
     const isShort = kind === "call" || kind === "put";
-    pnl = (isShort ? (openP - cp*100) : (cp*100 - openP)) * con - comm*con*2;
+    pnl = (isShort ? (openP - cp) : (cp - openP)) * 100 * con - comm*con*2;
     desc = `${isShort?"short":"long"} ${kind.replace("long","")} ${isFinite(strike)?strike:""} x${con}, opened ${openP}, closed ${cp}`;
   }
   REAL.push({ date: $("cl-date").value || new Date().toISOString().slice(0,10),
