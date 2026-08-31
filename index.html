@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark only">
-<title>LIDOR TERMINAL</title>
+<title>LDR TERMINAL</title>
 <style>
 :root{
   color-scheme: dark only;
@@ -182,6 +182,20 @@ canvas{display:block;width:100%;height:100%}
   width:100%;background:var(--amber);border:0;color:#000;font-family:var(--font);
   font-size:14px;font-weight:600;padding:10px;cursor:pointer;
 }
+#alrmodal{
+  position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:70;
+  display:none;align-items:center;justify-content:center;padding:16px;overflow:auto;
+}
+#alrmodal.on{display:flex}
+#alrmodal .box{background:var(--panel);border:1px solid var(--amber-dim);max-width:420px;width:100%}
+#alrmodal h3{background:var(--amber-dim);color:#000;font-size:12px;padding:3px 8px;font-weight:600}
+#alrmodal .in{padding:10px}
+#alrmodal .btns{display:flex;gap:8px;margin-top:10px}
+#alrmodal button{
+  flex:1;background:var(--amber);border:0;color:#000;font-family:var(--font);
+  font-size:13px;font-weight:600;padding:9px;cursor:pointer;
+}
+#alrmodal button.ghost{background:#000;color:var(--text-dim);border:1px solid var(--line)}
 #closedmodal{
   position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:70;
   display:none;align-items:center;justify-content:center;padding:16px;overflow:auto;
@@ -234,7 +248,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 19</span>
+    <span class="pill" id="st-build">BUILD 20</span>
     <span class="pill" id="st-calls">API 0</span>
     <span class="pill" id="st-age">never synced</span>
     <button class="hbtn" id="st-sync">sync now</button>
@@ -285,6 +299,14 @@ canvas{display:block;width:100%;height:100%}
       <div class="body" id="opt-body"></div>
     </section>
 
+    <section class="panel c4">
+      <h2><span class="code">ALR</span> Alerts
+        <button class="hbtn" id="alr-add">+ new</button>
+        <button class="hbtn" id="alr-perm">enable</button>
+      </h2>
+      <div class="body" id="alr-body"></div>
+    </section>
+
     <section class="panel c12">
       <h2><span class="code">ECN</span> Position economics
         <span class="note">premium banked vs shares</span>
@@ -319,6 +341,30 @@ canvas{display:block;width:100%;height:100%}
         <button id="lock-go">Unlock</button>
       </div>
       <p id="lock-note" style="margin-top:10px"></p>
+    </div>
+  </div>
+</div>
+
+<div id="alrmodal">
+  <div class="box">
+    <h3>New alert</h3>
+    <div class="in">
+      <div class="frow"><label>Symbol</label><input id="alr-sym" placeholder="AAPL"></div>
+      <div class="frow"><label>Trigger</label>
+        <select id="alr-kind">
+          <option value="above">Price rises above</option>
+          <option value="below">Price falls below</option>
+          <option value="dte">Days to expiry drop below</option>
+        </select></div>
+      <div class="frow"><label>Value</label><input id="alr-val" inputmode="decimal" placeholder="price, or number of days"></div>
+      <div class="frow"><label>Note</label><input id="alr-note" placeholder="optional"></div>
+      <div class="btns">
+        <button id="alr-save">Add</button>
+        <button id="alr-cancel" class="ghost">Cancel</button>
+      </div>
+      <p style="color:var(--text-dim);margin-top:8px;white-space:normal">
+        Alerts are checked while this page is open. They are not a substitute for
+        alerts set at your broker.</p>
     </div>
   </div>
 </div>
@@ -427,7 +473,7 @@ const CONFIG = {
   COMMISSION_STOCK: 0,
   // How long each feed stays fresh, in minutes. Nothing is refetched
   // before its time is up, so editing the book costs zero API calls.
-  TTL: { quotes: 20, history: 720, news: 240, macro: 720, legs: 360 },
+  TTL: { quotes: 20, history: 720, news: 240, macro: 720, legs: 360, earnings: 1440 },
   // Free FMP plans have a small daily call quota. Each refresh costs roughly
   // one call per watchlist symbol, plus history, news and macro.
   // 900s with a short watchlist keeps a day of use inside a free quota.
@@ -443,6 +489,8 @@ const CONFIG = {
    ------------------------------------------------------------ */
 let BOOK = [];   // open positions — loaded from your encrypted vault
 let REAL = [];   // closed trades: every premium you actually banked
+let IVLOG = {};  // symbol -> date -> implied volatility, your own history
+let ALERTS = []; // price and date alerts you set
 
 /* ============================================================
    3. STORAGE — guarded. No-ops silently if unavailable.
@@ -495,9 +543,9 @@ async function saveState(opts){
     if(current) store.set("ldr_vault_prev", current);   // one step of undo
     store.set("ldr_had_positions", BOOK.length > 0);
     store.set("ldr_vault", await seal(
-      { book:BOOK, real:REAL, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY,
+      { book:BOOK, real:REAL, ivlog:IVLOG, alerts:ALERTS, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY,
         cache:{ quotes:S.quotes, history:S.history, news:S.news, macro:S.macro,
-                legQuotes:S.legQuotes, ts:S.ts } }, PASS));
+                legQuotes:S.legQuotes, earnings:S.earnings, ts:S.ts } }, PASS));
   }catch(e){ toast("could not save: " + e.message); }
 }
 
@@ -513,6 +561,7 @@ const S = {
   macro: [],
   legQuotes: {},
   ts: {},            // feed -> when it was last fetched
+  earnings: {},      // symbol -> next reporting date
   errors: {},        // panel -> message
   live: false,
   dataOk: false,
@@ -681,6 +730,33 @@ function occSymbol(leg){
   return `${leg.sym}${y.slice(2)}${m}${d}${cp}${strike}`;
 }
 
+/* Earnings dates. FMP first, Market Data as a fallback. */
+async function fetchEarnings(syms){
+  const out = {};
+  for(const s of syms){
+    try{
+      if(keyed()){
+        API_CALLS++;
+        const j = await getJSON(`${FMP}/earnings?symbol=${s}&apikey=${CONFIG.FMP_KEY}`);
+        const rows = (j||[]).filter(r=>r.date).sort((a,b)=>a.date<b.date?-1:1);
+        const today = new Date().toISOString().slice(0,10);
+        const next = rows.find(r=>r.date >= today);
+        if(next){ out[s] = { date: next.date, eps: next.epsEstimated ?? null }; continue; }
+      }
+      if(mdKeyed()){
+        API_CALLS++;
+        const j = await getJSON(`${MD}/stocks/earnings/${s}/?token=${CONFIG.MD_KEY}`);
+        if(j.s === "ok" && j.reportDate?.length){
+          const today = Math.floor(Date.now()/1000);
+          const i = j.reportDate.findIndex(d=>d >= today);
+          if(i >= 0) out[s] = { date: new Date(j.reportDate[i]*1000).toISOString().slice(0,10), eps:null };
+        }
+      }
+    }catch(e){ /* one symbol failing must not blank the rest */ }
+  }
+  return out;
+}
+
 async function fetchLegQuotes(legs){
   if(!mdKeyed()) return {};
   const out = {};
@@ -783,8 +859,55 @@ function riskFlags(groups){
         f.push({lvl:"crit", txt:`${g.sym}: your lowest short-call strike (${ceiling}) is below your average cost (${g.avg.toFixed(2)}). If assigned at that strike you lock in a loss on the shares, and the premium collected may not cover it.`});
     }
   });
+  // earnings inside the life of a short leg
+  groups.forEach(g=>{
+    const e = S.earnings[g.sym];
+    if(!e || !e.date) return;
+    const days = Math.ceil((new Date(e.date+"T21:00:00Z") - new Date())/86400000);
+    if(days < 0) return;
+    const shorts = g.legs.filter(l=>l.type!=="stock" && l.side==="short");
+    const covering = shorts.filter(l=>dte(l.expiry) >= days);
+    if(covering.length){
+      const naked = g.uncovered > 0;
+      f.push({lvl: naked ? "crit" : "warnv",
+        txt:`${g.sym} reports on ${e.date}, in ${days} days — inside the life of ${covering.length} short leg${covering.length>1?"s":""}. Earnings is the single event most likely to move the stock enough to matter${naked?", and your uncovered calls have no ceiling on that move":""}.`});
+    } else if(days <= 21){
+      f.push({lvl:"info", txt:`${g.sym} reports on ${e.date}, in ${days} days. No short leg lives that long.`});
+    }
+  });
   if(!f.length) f.push({lvl:"info", txt:"No flags raised on the current book. This checks coverage, moneyness, expiry proximity and strike-versus-cost only — it is not a full risk model."});
   return f;
+}
+
+/* ============================================================
+   6a. VOLATILITY HISTORY — built here, one snapshot a day, so that in
+   a few months you have an IV rank nobody sold you.
+   ============================================================ */
+function recordIvSnapshot(){
+  const today = new Date().toISOString().slice(0,10);
+  BOOK.filter(l=>l.type!=="stock").forEach(l=>{
+    const q = S.legQuotes[l.id];
+    if(!q || q.iv == null) return;
+    IVLOG[l.sym] = IVLOG[l.sym] || {};
+    IVLOG[l.sym][today] = +(q.iv*100).toFixed(2);   // one value per symbol per day
+  });
+  // keep two years at most
+  Object.keys(IVLOG).forEach(sym=>{
+    const days = Object.keys(IVLOG[sym]).sort();
+    while(days.length > 730) delete IVLOG[sym][days.shift()];
+  });
+}
+function ivRank(sym, current){
+  const vals = Object.values(IVLOG[sym]||{});
+  if(vals.length < 10 || current == null) return null;
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const below = vals.filter(v=>v < current).length;
+  return {
+    n: vals.length,
+    rank: hi > lo ? ((current - lo)/(hi - lo))*100 : null,
+    pct: (below/vals.length)*100,
+    lo, hi
+  };
 }
 
 /* ============================================================
@@ -1114,6 +1237,63 @@ function renderEcon(groups){
   });
 }
 
+function checkAlerts(){
+  let fired = false;
+  ALERTS.forEach(a=>{
+    if(a.firedAt) return;
+    let hit = false, msg = "";
+    if(a.kind === "above" || a.kind === "below"){
+      const px = (S.quotes[a.sym]||{}).price;
+      if(px == null) return;
+      hit = a.kind === "above" ? px > a.val : px < a.val;
+      msg = `${a.sym} ${a.kind === "above" ? "rose above" : "fell below"} ${a.val} — now ${px.toFixed(2)}`;
+    } else if(a.kind === "dte"){
+      const legs = BOOK.filter(l=>l.sym===a.sym && l.type!=="stock");
+      const soon = legs.filter(l=>dte(l.expiry) <= a.val);
+      hit = soon.length > 0;
+      if(hit) msg = `${a.sym}: ${soon.length} option leg${soon.length>1?"s":""} now inside ${a.val} days to expiry`;
+    }
+    if(hit){
+      a.firedAt = new Date().toISOString();
+      a.msg = msg;
+      fired = true;
+      toast(msg);
+      try{
+        if("Notification" in window && Notification.permission === "granted"){
+          new Notification("LDR TERMINAL", { body: msg + (a.note ? " — " + a.note : "") });
+        }
+      }catch(e){}
+    }
+  });
+  if(fired) saveState();
+}
+
+function renderAlerts(){
+  if(!ALERTS.length){
+    $("alr-body").innerHTML = `<div class="empty">No alerts. Use <b>+ new</b> to be told when a price is crossed or an expiry gets close.<br><br>Checked only while this page is open — set anything that really matters at your broker too.</div>`;
+    return;
+  }
+  let h2 = `<table><thead><tr><th>alert</th><th>state</th><th></th></tr></thead><tbody>`;
+  ALERTS.forEach((a,i)=>{
+    const label = a.kind === "dte"
+      ? `${a.sym} within ${a.val} days of expiry`
+      : `${a.sym} ${a.kind === "above" ? "above" : "below"} ${a.val}`;
+    h2 += `<tr>
+      <td class="sym" style="white-space:normal">${label}${a.note?` <span class="dim">${a.note}</span>`:""}</td>
+      <td class="${a.firedAt?"warn":"dim"}">${a.firedAt ? "fired " + a.firedAt.slice(5,10) : "armed"}</td>
+      <td><button class="rowbtn" data-delalr="${i}">remove</button>
+          ${a.firedAt?`<button class="rowbtn" data-rearm="${i}">re-arm</button>`:""}</td></tr>`;
+  });
+  h2 += `</tbody></table>`;
+  $("alr-body").innerHTML = h2;
+  $("alr-body").querySelectorAll("button[data-delalr]").forEach(b=>{
+    b.onclick = () => { ALERTS.splice(+b.dataset.delalr,1); saveState(); rerender(); };
+  });
+  $("alr-body").querySelectorAll("button[data-rearm]").forEach(b=>{
+    b.onclick = () => { delete ALERTS[+b.dataset.rearm].firedAt; saveState(); rerender(); };
+  });
+}
+
 function renderMacro(){
   if(!S.macro.length){
     $("macro-body").innerHTML = `<div class="empty">No macro feed connected. Point <b>fetchMacro()</b> at the CPI / EFFR / GDP feed you already run in the Analyzer.</div>`;
@@ -1136,7 +1316,7 @@ function renderOpt(){
     return;
   }
   let h2 = `<table><thead><tr>
-    <th>leg</th><th>mid</th><th>P/L</th><th>IV</th><th>delta</th><th>theta</th><th>OI</th><th>spread</th>
+    <th>leg</th><th>mid</th><th>P/L</th><th>IV</th><th>IV rank</th><th>delta</th><th>theta</th><th>spread</th>
   </tr></thead><tbody>`;
   let stale = null;
   legs.sort((a,b)=>a.strike-b.strike).forEach(l=>{
@@ -1157,13 +1337,22 @@ function renderOpt(){
       <td>${q.mid!=null?q.mid.toFixed(2):"—"}</td>
       <td class="${sgn(pnl)}">${fmtUSD(pnl)}</td>
       <td>${q.iv!=null?(q.iv*100).toFixed(1)+"%":"—"}</td>
+      <td>${(()=>{
+        const r = ivRank(l.sym, q.iv!=null ? q.iv*100 : null);
+        if(!r) { const n = Object.keys(IVLOG[l.sym]||{}).length;
+                 return `<span class="dim">${n}/10 days</span>`; }
+        const cls = r.pct >= 70 ? "up" : r.pct <= 30 ? "down" : "";
+        return `<span class="${cls}">${r.pct.toFixed(0)}%</span> <span class="dim">of ${r.n}d</span>`;
+      })()}</td>
       <td>${q.delta!=null?q.delta.toFixed(2):"—"}</td>
       <td class="${q.theta>0?"up":"down"}">${q.theta!=null?q.theta.toFixed(2):"—"}</td>
-      <td class="dim">${q.oi ?? "—"}</td>
       <td class="${spreadPct>15?"warn":"dim"}">${spreadPct!=null?spreadPct.toFixed(0)+"%":"—"}</td>
     </tr>`;
   });
   h2 += `</tbody></table>`;
+  const earn = [...new Set(legs.map(l=>l.sym))]
+    .map(s=>S.earnings[s] ? `${s} reports ${S.earnings[s].date}` : null).filter(Boolean);
+  if(earn.length) h2 = `<div class="empty" style="padding:2px 0"><b>${earn.join(" · ")}</b></div>` + h2;
   $("opt-body").innerHTML = h2;
   $("opt-note").textContent = stale
     ? "as of " + new Date(stale*1000).toISOString().slice(0,16).replace("T"," ") + " — free plans delay options data 24h"
@@ -1266,6 +1455,7 @@ function rerenderInner(){
   renderMonitor();
   renderChart();
   renderEcon(groups);
+  renderAlerts();
   renderMacro();
   renderOpt();
   renderNews();
@@ -1310,7 +1500,18 @@ async function refresh(force){
     try{ S.legQuotes = { ...S.legQuotes, ...await fetchLegQuotes(legs) }; stamp("legs"); }catch(e){}
   }
 
+  if(force || !fresh("earnings")){
+    const syms2 = [...new Set(BOOK.map(b=>b.sym))];
+    if(syms2.length){
+      try{ const e = await fetchEarnings(syms2);
+           if(Object.keys(e).length){ S.earnings = { ...S.earnings, ...e }; stamp("earnings"); } }
+      catch(e){}
+    }
+  }
+
+  recordIvSnapshot();
   rerender();
+  checkAlerts();
   saveState();
 }
 
@@ -1529,6 +1730,30 @@ $("leg-save").onclick = () => {
   closeLeg(); refresh();
 };
 
+$("alr-add").onclick = () => {
+  $("alr-sym").value = S.sym || "";
+  $("alr-val").value = ""; $("alr-note").value = "";
+  $("alrmodal").classList.add("on");
+  setTimeout(()=>$("alr-val").focus(), 60);
+};
+$("alr-cancel").onclick = () => $("alrmodal").classList.remove("on");
+$("alrmodal").onclick = e => { if(e.target.id==="alrmodal") $("alrmodal").classList.remove("on"); };
+$("alr-save").onclick = () => {
+  const sym = $("alr-sym").value.trim().toUpperCase();
+  const val = parseFloat($("alr-val").value);
+  if(!sym || !isFinite(val)){ toast("symbol and value are both needed"); return; }
+  ALERTS.push({ sym, kind:$("alr-kind").value, val, note:$("alr-note").value.trim() });
+  saveState();
+  $("alrmodal").classList.remove("on");
+  rerender();
+};
+$("alr-perm").onclick = async () => {
+  if(!("Notification" in window)){ toast("this browser has no notification support"); return; }
+  const r = await Notification.requestPermission();
+  toast(r === "granted" ? "notifications on — only while this page is open"
+                        : "notifications not granted; alerts still show on screen");
+};
+
 $("econ-log").onclick = () => {
   $("cl-date").value = new Date().toISOString().slice(0,10);
   $("cl-sym").value = S.sym || "";
@@ -1586,6 +1811,8 @@ $("pos-file").onchange = e => {
       const parsed = Array.isArray(raw) ? raw : raw.book;
       if(!Array.isArray(parsed)) throw new Error("not a book file");
       if(raw && Array.isArray(raw.realized)) REAL = raw.realized;
+      if(raw && raw.ivlog) IVLOG = raw.ivlog;
+      if(raw && Array.isArray(raw.alerts)) ALERTS = raw.alerts;
       BOOK = parsed.map((l,i)=>({ ...l, id: l.id || ((l.type==="stock"?"e":"o")+i+Date.now()) }));
       saveState();
       toast("loaded " + BOOK.length + " lines");
@@ -1599,7 +1826,7 @@ $("pos-file").onchange = e => {
 /* Backup link: the whole book encoded in the URL. Bookmark it and the
    positions survive a cache wipe, a new browser, or another device. */
 async function bookToHash(){
-  const blob = await seal({ book:BOOK, real:REAL, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY }, PASS);
+  const blob = await seal({ book:BOOK, real:REAL, ivlog:IVLOG, alerts:ALERTS, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY }, PASS);
   return "#v=" + encodeURIComponent(btoa(JSON.stringify(blob)));
 }
 $("pos-link").onclick = async () => {
@@ -1615,7 +1842,7 @@ $("pos-link").onclick = async () => {
   }
 };
 function exportBook(){
-  const blob = new Blob([JSON.stringify({book:BOOK, realized:REAL},null,2)], {type:"application/json"});
+  const blob = new Blob([JSON.stringify({book:BOOK, realized:REAL, ivlog:IVLOG, alerts:ALERTS},null,2)], {type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "ldr-book-" + new Date().toISOString().slice(0,10) + ".json";
@@ -1670,6 +1897,8 @@ async function attemptUnlock(){
     VAULT_READY = true;
     BOOK = Array.isArray(data.book) ? data.book : [];
     REAL = Array.isArray(data.real) ? data.real : [];
+    IVLOG = data.ivlog || {};
+    ALERTS = Array.isArray(data.alerts) ? data.alerts : [];
     CONFIG.FMP_KEY = data.fmp || "";
     CONFIG.TD_KEY  = data.td  || "";
     CONFIG.MD_KEY  = data.md  || "";
@@ -1679,6 +1908,7 @@ async function attemptUnlock(){
       S.news      = data.cache.news      || [];
       S.macro     = data.cache.macro     || [];
       S.legQuotes = data.cache.legQuotes || {};
+      S.earnings  = data.cache.earnings  || {};
       S.ts        = data.cache.ts        || {};
       if(Object.values(S.quotes).some(q=>q && q.demo === false)) S.dataOk = true;
     }
