@@ -248,7 +248,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 20</span>
+    <span class="pill" id="st-build">BUILD 21</span>
     <span class="pill" id="st-calls">API 0</span>
     <span class="pill" id="st-age">never synced</span>
     <button class="hbtn" id="st-sync">sync now</button>
@@ -562,6 +562,7 @@ const S = {
   legQuotes: {},
   ts: {},            // feed -> when it was last fetched
   earnings: {},      // symbol -> next reporting date
+  earningsErr: {},   // symbol -> why the lookup failed
   errors: {},        // panel -> message
   live: false,
   dataOk: false,
@@ -733,7 +734,9 @@ function occSymbol(leg){
 /* Earnings dates. FMP first, Market Data as a fallback. */
 async function fetchEarnings(syms){
   const out = {};
+  S.earningsErr = {};
   for(const s of syms){
+    let lastErr = null;
     try{
       if(keyed()){
         API_CALLS++;
@@ -742,6 +745,7 @@ async function fetchEarnings(syms){
         const today = new Date().toISOString().slice(0,10);
         const next = rows.find(r=>r.date >= today);
         if(next){ out[s] = { date: next.date, eps: next.epsEstimated ?? null }; continue; }
+        lastErr = "FMP returned no future date";
       }
       if(mdKeyed()){
         API_CALLS++;
@@ -752,7 +756,8 @@ async function fetchEarnings(syms){
           if(i >= 0) out[s] = { date: new Date(j.reportDate[i]*1000).toISOString().slice(0,10), eps:null };
         }
       }
-    }catch(e){ /* one symbol failing must not blank the rest */ }
+      if(!out[s]) S.earningsErr[s] = lastErr || "no upcoming date returned";
+    }catch(e){ S.earningsErr[s] = e.message; }
   }
   return out;
 }
@@ -1350,9 +1355,13 @@ function renderOpt(){
     </tr>`;
   });
   h2 += `</tbody></table>`;
-  const earn = [...new Set(legs.map(l=>l.sym))]
-    .map(s=>S.earnings[s] ? `${s} reports ${S.earnings[s].date}` : null).filter(Boolean);
-  if(earn.length) h2 = `<div class="empty" style="padding:2px 0"><b>${earn.join(" · ")}</b></div>` + h2;
+  const syms3 = [...new Set(legs.map(l=>l.sym))];
+  const earn = syms3.map(s=>{
+    if(S.earnings[s]) return `<b>${s} reports ${S.earnings[s].date}</b>`;
+    const err = (S.earningsErr||{})[s];
+    return `<span class="down">${s} earnings date unavailable${err?" — "+err:""}</span>`;
+  });
+  h2 = `<div class="empty" style="padding:2px 0">${earn.join("<br>")}</div>` + h2;
   $("opt-body").innerHTML = h2;
   $("opt-note").textContent = stale
     ? "as of " + new Date(stale*1000).toISOString().slice(0,16).replace("T"," ") + " — free plans delay options data 24h"
@@ -1530,6 +1539,7 @@ const HELP = [
   "RESET             restore the seeded book",
   "R                 force refresh",
   "RECOVER           restore the previous saved vault",
+  "EARN              retry the earnings lookup now",
 ];
 function runCommand(raw){
   const p = raw.trim().split(/\s+/); if(!p[0]) return;
@@ -1540,6 +1550,14 @@ function runCommand(raw){
   if(c==="TD"){ CONFIG.TD_KEY=p[1]||""; saveState(); toast("Twelve Data key set"); refresh(); return; }
   if(c==="DEMO"){ CONFIG.FMP_KEY=""; CONFIG.TD_KEY=""; saveState(); toast("demo mode"); refresh(); return; }
   if(c==="R"){ refresh(true); return; }
+  if(c==="EARN"){
+    const s2 = [...new Set(BOOK.map(b=>b.sym))];
+    fetchEarnings(s2).then(e=>{
+      S.earnings = { ...S.earnings, ...e }; stamp("earnings"); rerender();
+      toast(Object.keys(e).length ? "earnings updated" : "no dates returned — see the OPT panel");
+    });
+    return;
+  }
   if(c==="RECOVER"){
     const prev = store.get("ldr_vault_prev", null);
     if(!prev){ toast("no previous vault stored"); return; }
