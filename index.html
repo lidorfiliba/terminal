@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDR TERMINAL</title>
+<style>
+:root{
+  --bg:#000000;
+  --panel:#080808;
+  --line:#2a2419;
+  --amber:#ffa028;
+  --amber-dim:#a86a1c;
+  --text:#e8e0d0;
+  --text-dim:#7d7566;
+  --up:#3ddc84;
+  --down:#ff4d4d;
+  --warn:#ffd24a;
+  --key:#0d2b4a;
+  --font:"IBM Plex Mono","JetBrains Mono",Consolas,Menlo,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--font);
+  font-size:12px;line-height:1.35;overflow:hidden;
+  -webkit-font-smoothing:none;
+}
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* ---- top status bar ---- */
+#statusbar{
+  display:flex;align-items:center;gap:14px;
+  background:var(--amber);color:#000;padding:3px 8px;font-weight:600;
+  flex:0 0 auto;white-space:nowrap;overflow:hidden;
+}
+#statusbar .brand{letter-spacing:2px}
+#statusbar .sp{margin-left:auto}
+.pill{background:#000;color:var(--amber);padding:0 6px}
+.pill.live{background:#0a3d1c;color:var(--up)}
+.pill.demo{background:#3d2a00;color:var(--warn)}
+.errbadge{
+  background:#7a0f0f;color:#ffd9d9;padding:0 6px;font-weight:600;
+  white-space:normal;cursor:pointer;
+}
+@media(max-width:900px){
+  #statusbar{flex-wrap:wrap;white-space:normal}
+  #statusbar .sp{margin-left:0;flex-basis:100%}
+}
+
+/* ---- grid ---- */
+#grid{
+  flex:1 1 auto;display:grid;gap:1px;background:var(--line);
+  grid-template-columns:repeat(12,1fr);
+  grid-auto-rows:minmax(0,1fr);
+  overflow:hidden;padding:1px;
+}
+.panel{background:var(--panel);display:flex;flex-direction:column;min-height:0;min-width:0}
+.panel > h2{
+  font-size:11px;font-weight:600;color:#000;background:var(--amber-dim);
+  padding:1px 6px;display:flex;gap:8px;align-items:center;flex:0 0 auto;
+}
+.panel > h2 .code{background:#000;color:var(--amber);padding:0 4px}
+.panel > h2 .note{margin-left:auto;font-weight:400;color:#1a1409}
+.body{flex:1 1 auto;overflow:auto;padding:3px 6px}
+.body::-webkit-scrollbar{width:6px;height:6px}
+.body::-webkit-scrollbar-thumb{background:var(--line)}
+
+/* spans */
+.c3{grid-column:span 3}.c4{grid-column:span 4}.c5{grid-column:span 5}
+.c6{grid-column:span 6}.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
+.r2{grid-row:span 2}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{
+  text-align:right;color:var(--amber-dim);font-weight:400;
+  border-bottom:1px solid var(--line);padding:1px 4px;position:sticky;top:0;background:var(--panel);
+}
+th:first-child,td:first-child{text-align:left}
+td{padding:1px 4px;text-align:right;border-bottom:1px solid #131007;white-space:nowrap}
+tr.sel td{background:#1a1206}
+tbody tr:hover td{background:#141005}
+.sym{color:var(--amber);font-weight:600}
+.up{color:var(--up)}.down{color:var(--down)}.dim{color:var(--text-dim)}.warn{color:var(--warn)}
+.tag{padding:0 4px;font-size:10.5px}
+.tag.naked{background:#4a0d0d;color:#ff8a8a}
+.tag.cov{background:#0a3d1c;color:var(--up)}
+.tag.itm{background:#4a3a00;color:var(--warn)}
+
+/* ---- risk lines ---- */
+.riskline{display:flex;gap:6px;padding:2px 0;border-bottom:1px solid #131007;align-items:flex-start}
+.riskline .lvl{flex:0 0 auto;width:52px;text-align:center;font-size:10.5px}
+.lvl.crit{background:#4a0d0d;color:#ff8a8a}
+.lvl.warnv{background:#4a3a00;color:var(--warn)}
+.lvl.info{background:#12253a;color:#7fb6ef}
+.riskline .txt{flex:1 1 auto;white-space:normal}
+
+/* ---- empty / error states ---- */
+.empty{color:var(--text-dim);padding:6px 2px;white-space:normal}
+.empty b{color:var(--warn);font-weight:600}
+
+/* ---- news ---- */
+.news{display:block;padding:2px 0;border-bottom:1px solid #131007;color:var(--text);text-decoration:none;white-space:normal}
+.news:hover{background:#141005}
+.news .t{color:var(--text-dim);margin-right:6px}
+.news .s{color:var(--amber)}
+
+/* ---- macro ---- */
+.kv{display:flex;justify-content:space-between;padding:1px 0;border-bottom:1px solid #131007}
+.kv .k{color:var(--text-dim)}
+
+/* ---- chart ---- */
+canvas{display:block;width:100%;height:100%}
+
+/* ---- command line ---- */
+#cmdbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:6px;
+  background:#0d0a04;border-top:1px solid var(--amber-dim);padding:2px 8px;
+}
+#cmdbar label{color:var(--amber);font-weight:600}
+#cmd{
+  flex:1 1 auto;background:transparent;border:0;outline:0;color:var(--text);
+  font-family:var(--font);font-size:12px;caret-color:var(--amber);
+}
+#cmdhint{color:var(--text-dim);font-size:11px}
+#toast{
+  position:fixed;bottom:26px;left:8px;background:#1a1206;border:1px solid var(--amber-dim);
+  color:var(--amber);padding:3px 8px;font-size:11px;display:none;max-width:60ch;white-space:normal;
+}
+/* ---- settings overlay ---- */
+#setup{
+  position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:50;
+  display:none;align-items:center;justify-content:center;padding:16px;
+}
+#setup.on{display:flex}
+#setup .box{
+  background:var(--panel);border:1px solid var(--amber-dim);max-width:440px;width:100%;
+}
+#setup h3{background:var(--amber-dim);color:#000;font-size:12px;padding:3px 8px;font-weight:600}
+#setup .in{padding:10px}
+#setup p{color:var(--text-dim);margin-bottom:8px;white-space:normal;line-height:1.5}
+#setup input{
+  width:100%;background:#000;border:1px solid var(--line);color:var(--amber);
+  font-family:var(--font);font-size:14px;padding:8px;outline:0;
+}
+#setup input:focus{border-color:var(--amber)}
+#setup .btns{display:flex;gap:8px;margin-top:10px}
+#setup button{
+  flex:1;background:var(--amber);border:0;color:#000;font-family:var(--font);
+  font-size:13px;font-weight:600;padding:9px;cursor:pointer;
+}
+#setup button.ghost{background:#000;color:var(--text-dim);border:1px solid var(--line)}
+#statusbar .gear{cursor:pointer;text-decoration:underline}
+@media(max-width:900px){
+  #grid{grid-template-columns:repeat(6,1fr);grid-auto-rows:auto;overflow:auto}
+  .c3,.c4,.c5,.c7,.c8{grid-column:span 6}
+  .panel{min-height:180px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="statusbar">
+    <span class="brand">LDR&nbsp;TERMINAL</span>
+    <span class="pill" id="st-build">BUILD 3</span>
+    <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
+    <span id="st-mkt" class="pill">MKT —</span>
+    <span id="st-sym" class="pill">RKLB</span>
+    <span id="st-err" class="errbadge" style="display:none"></span>
+    <span class="sp"></span>
+    <span id="st-clock">--:--:--</span>
+  </div>
+
+  <div id="grid">
+
+    <section class="panel c7 r2">
+      <h2><span class="code">POS</span> Positions and open option legs <span class="note" id="pos-note"></span></h2>
+      <div class="body" id="pos-body"></div>
+    </section>
+
+    <section class="panel c5">
+      <h2><span class="code">RSK</span> Exposure checks</h2>
+      <div class="body" id="risk-body"></div>
+    </section>
+
+    <section class="panel c5">
+      <h2><span class="code">MON</span> Monitor</h2>
+      <div class="body" id="mon-body"></div>
+    </section>
+
+    <section class="panel c5">
+      <h2><span class="code">GP</span> <span id="chart-title">Price</span></h2>
+      <div class="body" style="padding:0"><canvas id="chart"></canvas></div>
+    </section>
+
+    <section class="panel c3">
+      <h2><span class="code">MAC</span> Macro</h2>
+      <div class="body" id="macro-body"></div>
+    </section>
+
+    <section class="panel c4">
+      <h2><span class="code">OPT</span> Premium scanner</h2>
+      <div class="body" id="opt-body"></div>
+    </section>
+
+    <section class="panel c12" style="grid-row:span 1">
+      <h2><span class="code">NWS</span> Headlines</h2>
+      <div class="body" id="news-body"></div>
+    </section>
+
+  </div>
+
+  <div id="cmdbar">
+    <label for="cmd">&gt;</label>
+    <input id="cmd" autocomplete="off" spellcheck="false" placeholder="type a ticker and press Enter, or HELP">
+    <span id="cmdhint">HELP for commands</span>
+  </div>
+</div>
+<div id="toast"></div>
+
+<div id="setup">
+  <div class="box">
+    <h3>Data source</h3>
+    <div class="in">
+      <p>Paste your Financial Modeling Prep key to switch from synthetic demo data to live quotes, history and headlines. It stays on this device and is never sent anywhere except to the data provider.</p>
+      <input id="setup-key" type="text" autocomplete="off" spellcheck="false" placeholder="paste key here">
+      <div class="btns">
+        <button id="setup-save">Use live data</button>
+        <button id="setup-demo" class="ghost">Stay in demo</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   1. CONFIG  — edit this block
+   ============================================================ */
+const CONFIG = {
+  // Financial Modeling Prep key. Empty string = DEMO mode (synthetic data).
+  // You can also set it at runtime:  KEY your_key_here
+  FMP_KEY: "",
+  REFRESH_SECONDS: 60,
+  WATCHLIST: ["RKLB","AMD","SPY","QQQ","NVDA","SPCX","TSLA"],
+  DEFAULT_SYMBOL: "RKLB",
+};
+
+/* ------------------------------------------------------------
+   2. PORTFOLIO — your live book. Verify every line before use.
+   Seeded from what you described on 28.8.26.
+   type: "stock" | "call" | "put"     side: "long" | "short"
+   ------------------------------------------------------------ */
+let BOOK = [
+  { id:"e1", type:"stock", side:"long",  sym:"RKLB", qty:200, avg:79.70 },
+  { id:"o1", type:"call",  side:"short", sym:"RKLB", contracts:2, strike:110, expiry:"2027-01-15", credit:331 },
+  { id:"o2", type:"call",  side:"short", sym:"RKLB", contracts:2, strike:90,  expiry:"2027-01-15", credit:547 },
+];
+
+/* ============================================================
+   3. STORAGE — guarded. No-ops silently if unavailable.
+   ============================================================ */
+const store = {
+  get(k, fb){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fb; }catch(e){ return fb; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+CONFIG.FMP_KEY = store.get("ldr_key", CONFIG.FMP_KEY);
+BOOK = store.get("ldr_book", BOOK);
+
+/* ============================================================
+   4. STATE
+   ============================================================ */
+const S = {
+  sym: CONFIG.DEFAULT_SYMBOL,
+  quotes: {},        // sym -> {price, chg, chgPct, name, ts}
+  history: {},       // sym -> [{d, c}]
+  news: [],
+  macro: [],
+  errors: {},        // panel -> message
+  live: false,
+  dataOk: false,     // true only when the last quote fetch actually returned provider data
+  lastError: null,
+};
+
+/* ============================================================
+   5. DATA ADAPTERS
+   Each returns real data when a key exists, otherwise synthetic
+   data that is clearly labelled DEMO. Swap the fetch bodies to
+   move to Polygon / ORATS / Databento without touching the UI.
+   ============================================================ */
+const FMP = "https://financialmodelingprep.com/stable";
+
+function keyed(){ return CONFIG.FMP_KEY && CONFIG.FMP_KEY.length > 8; }
+
+async function getJSON(url){
+  const r = await fetch(url);
+  const raw = await r.text();
+  if(!r.ok) throw new Error("HTTP " + r.status + " — " + raw.slice(0,180));
+  let j; try{ j = JSON.parse(raw); }catch(e){ throw new Error("provider did not return JSON: " + raw.slice(0,120)); }
+  if(j && j["Error Message"]) throw new Error(j["Error Message"]);
+  return j;
+}
+
+/* --- demo generator: deterministic per symbol so it doesn't flicker --- */
+function seedOf(s){ let h=0; for(const c of s) h=(h*31+c.charCodeAt(0))%99991; return h; }
+function demoQuote(sym){
+  const base = { RKLB:65.30, AMD:512.40, SPY:648.20, QQQ:582.10, NVDA:196.80, SPCX:118.60, TSLA:412.30 }[sym]
+            || 40 + (seedOf(sym)%160);
+  const drift = ((Date.now()/600000|0) % 17 - 8) / 100;
+  const px = +(base * (1 + drift/10)).toFixed(2);
+  const chg = +(px - base).toFixed(2);
+  return { price:px, chg, chgPct:+(chg/base*100).toFixed(2), name:sym, demo:true };
+}
+function demoHistory(sym){
+  const q = demoQuote(sym); const out=[]; let p=q.price*0.82; let s=seedOf(sym);
+  for(let i=180;i>=0;i--){
+    s=(s*1103515245+12345)%2147483648;
+    p *= 1 + (((s%1000)/1000)-0.485)*0.033;
+    const d=new Date(); d.setDate(d.getDate()-i);
+    out.push({ d:d.toISOString().slice(0,10), c:+p.toFixed(2) });
+  }
+  out[out.length-1].c = q.price;
+  return out;
+}
+
+async function fetchQuotes(syms){
+  if(!keyed()){ const o={}; syms.forEach(s=>o[s]=demoQuote(s)); return o; }
+  const j = await getJSON(`${FMP}/batch-quote?symbols=${syms.join(",")}&apikey=${CONFIG.FMP_KEY}`);
+  const o = {};
+  (j||[]).forEach(q => o[q.symbol] = {
+    price:q.price, chg:q.change,
+    chgPct: q.changePercentage ?? q.changesPercentage,
+    name:q.name, dayLow:q.dayLow, dayHigh:q.dayHigh,
+    vol:q.volume, avgVol:q.avgVolume,
+    y52h:q.yearHigh, y52l:q.yearLow, mcap:q.marketCap, demo:false
+  });
+  return o;
+}
+async function fetchHistory(sym){
+  if(!keyed()) return demoHistory(sym);
+  const j = await getJSON(`${FMP}/historical-price-eod/light?symbol=${sym}&apikey=${CONFIG.FMP_KEY}`);
+  const rows = Array.isArray(j) ? j : (j.historical || []);
+  return rows.map(r=>({ d:r.date, c: r.price ?? r.close })).reverse().slice(-180);
+}
+async function fetchNews(syms){
+  if(!keyed()) return [];
+  const j = await getJSON(`${FMP}/news/stock?symbols=${syms.join(",")}&limit=25&apikey=${CONFIG.FMP_KEY}`);
+  return (j||[]).map(n=>({
+    t:n.publishedDate, sym:n.symbol, title:n.title,
+    site: n.site ?? n.publisher, url:n.url
+  }));
+}
+async function fetchMacro(){
+  if(!keyed()) return [];
+  const wanted = [
+    ["CPI","CPI"],
+    ["GDP","GDP"],
+    ["federalFunds","Fed funds"],
+    ["unemploymentRate","Unemployment"],
+  ];
+  const out = [];
+  for(const [name,label] of wanted){
+    try{
+      const j = await getJSON(`${FMP}/economic-indicators?name=${name}&apikey=${CONFIG.FMP_KEY}`);
+      const rows = (j||[]).slice(0,2);
+      if(!rows.length) continue;
+      const cur = rows[0].value, prev = rows[1] ? rows[1].value : null;
+      out.push({ k:`${label} (${rows[0].date})`, v:Number(cur).toFixed(2),
+                 chg: prev!=null ? cur-prev : 0 });
+    }catch(e){ /* one indicator missing should not blank the panel */ }
+  }
+  return out;
+}
+/* Options premium data has no adapter yet — this is the layer you still
+   need a paid source for. Implement fetchChain() and the OPT panel lights up. */
+async function fetchChain(sym){ return null; }
+
+/* ============================================================
+   6. RISK ENGINE — the part no vendor sells you
+   ============================================================ */
+function dte(expiry){
+  const ms = new Date(expiry+"T21:00:00Z") - new Date();
+  return Math.max(0, Math.ceil(ms/86400000));
+}
+function analyseBook(book, quotes){
+  const bySym = {};
+  book.forEach(p => (bySym[p.sym] = bySym[p.sym] || []).push(p));
+  const out = [];
+  for(const sym in bySym){
+    const legs = bySym[sym];
+    const px = (quotes[sym]||{}).price ?? null;
+    const shares = legs.filter(l=>l.type==="stock").reduce((a,l)=>a + (l.side==="short"?-l.qty:l.qty), 0);
+    const avg = (legs.find(l=>l.type==="stock")||{}).avg ?? null;
+    const shortCalls = legs.filter(l=>l.type==="call" && l.side==="short");
+    const contractsShort = shortCalls.reduce((a,l)=>a+l.contracts,0);
+    const sharesNeeded = contractsShort*100;
+    const uncovered = Math.max(0, sharesNeeded - Math.max(0,shares));
+    // allocate cover to the lowest strikes first (worst case for you)
+    let coverLeft = Math.max(0, shares);
+    const sorted = [...shortCalls].sort((a,b)=>a.strike-b.strike);
+    const cover = {};
+    sorted.forEach(l=>{
+      const need = l.contracts*100;
+      const got = Math.min(coverLeft, need);
+      coverLeft -= got;
+      cover[l.id] = got/need;   // 0..1
+    });
+    const credit = legs.filter(l=>l.type!=="stock")
+                       .reduce((a,l)=>a + (l.side==="short"? l.credit*l.contracts : -l.credit*l.contracts), 0);
+    out.push({ sym, px, shares, avg, legs, cover, uncovered, contractsShort, credit });
+  }
+  return out;
+}
+function riskFlags(groups){
+  const f = [];
+  groups.forEach(g=>{
+    const px = g.px;
+    if(g.uncovered > 0){
+      f.push({lvl:"crit", txt:`${g.sym}: ${g.uncovered} shares of short-call exposure are uncovered. Loss above the strike is unbounded and grows one-for-one with the stock. Assignment on an uncovered leg forces you to buy at market.`});
+    }
+    g.legs.filter(l=>l.type!=="stock").forEach(l=>{
+      const d = dte(l.expiry);
+      if(px == null) return;
+      const dist = ((l.strike - px)/px)*100;
+      const itm = (l.type==="call" && px > l.strike) || (l.type==="put" && px < l.strike);
+      if(itm && l.side==="short")
+        f.push({lvl:"crit", txt:`${g.sym} short ${l.type} ${l.strike} is in the money with ${d} days left. Early assignment is live, especially before a dividend or on a low-extrinsic day.`});
+      else if(l.side==="short" && Math.abs(dist) < 8)
+        f.push({lvl:"warnv", txt:`${g.sym} short ${l.type} ${l.strike} sits ${dist.toFixed(1)}% from spot with ${d} days left. This is the roll decision zone.`});
+      if(l.side==="short" && d <= 7)
+        f.push({lvl:"warnv", txt:`${g.sym} short ${l.type} ${l.strike} expires in ${d} days. Gamma is at its worst here.`});
+    });
+    if(g.px != null && g.avg != null && g.shares > 0){
+      const pnl = (g.px - g.avg) * g.shares;
+      const pct = ((g.px/g.avg)-1)*100;
+      if(pct < -15) f.push({lvl:"warnv", txt:`${g.sym} equity is ${pct.toFixed(1)}% below your average at ${g.avg.toFixed(2)}, an open loss of ${fmtUSD(pnl)}. Adding here lowers the average and raises the position size at the same time.`});
+      const ceiling = Math.min(...g.legs.filter(l=>l.type==="call"&&l.side==="short").map(l=>l.strike));
+      if(isFinite(ceiling) && ceiling < g.avg)
+        f.push({lvl:"crit", txt:`${g.sym}: your lowest short-call strike (${ceiling}) is below your average cost (${g.avg.toFixed(2)}). If assigned at that strike you lock in a loss on the shares, and the premium collected may not cover it.`});
+    }
+  });
+  if(!f.length) f.push({lvl:"info", txt:"No flags raised on the current book. This checks coverage, moneyness, expiry proximity and strike-versus-cost only — it is not a full risk model."});
+  return f;
+}
+
+/* ============================================================
+   7. RENDER
+   ============================================================ */
+const $ = id => document.getElementById(id);
+const fmtUSD = n => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:0});
+const sgn = n => n>0?"up":n<0?"down":"dim";
+const arrow = n => n>0?"▲":n<0?"▼":" ";
+
+function renderPositions(groups){
+  if(!groups.length){ $("pos-body").innerHTML = `<div class="empty">No positions loaded. Edit the <b>BOOK</b> array near the top of this file, or use <b>ADD</b> from the command line.</div>`; return; }
+  let h = "";
+  groups.forEach(g=>{
+    const px = g.px;
+    h += `<table><thead><tr>
+      <th>${g.sym} — ${g.shares} sh @ ${g.avg?g.avg.toFixed(2):"—"}</th>
+      <th>last</th><th>qty</th><th>strike</th><th>dte</th><th>dist</th><th>credit</th><th>status</th>
+    </tr></thead><tbody>`;
+    const eqPnl = (px!=null && g.avg!=null) ? (px-g.avg)*g.shares : null;
+    h += `<tr><td class="sym">EQUITY</td>
+      <td>${px!=null?px.toFixed(2):"—"}</td>
+      <td>${g.shares}</td><td class="dim">—</td><td class="dim">—</td>
+      <td class="dim">—</td>
+      <td class="${eqPnl!=null?sgn(eqPnl):"dim"}">${eqPnl!=null?fmtUSD(eqPnl):"—"}</td>
+      <td class="dim">open</td></tr>`;
+    g.legs.filter(l=>l.type!=="stock")
+      .sort((a,b)=>a.strike-b.strike)
+      .forEach(l=>{
+        const d = dte(l.expiry);
+        const dist = px!=null ? ((l.strike-px)/px)*100 : null;
+        const c = g.cover[l.id] ?? 0;
+        const itm = px!=null && ((l.type==="call"&&px>l.strike)||(l.type==="put"&&px<l.strike));
+        let tag = c>=1 ? `<span class="tag cov">covered</span>`
+                : c>0  ? `<span class="tag naked">${Math.round((1-c)*100)}% naked</span>`
+                       : `<span class="tag naked">naked</span>`;
+        if(l.side==="long") tag = `<span class="tag cov">long</span>`;
+        if(itm) tag += ` <span class="tag itm">ITM</span>`;
+        h += `<tr><td class="sym">${l.side==="short"?"SHORT":"LONG"} ${l.type.toUpperCase()}</td>
+          <td class="dim">${l.expiry.slice(2)}</td>
+          <td>${l.contracts}</td>
+          <td>${l.strike}</td>
+          <td class="${d<=7?"warn":""}">${d}</td>
+          <td class="${dist!=null?(dist>0?"up":"down"):"dim"}">${dist!=null?dist.toFixed(1)+"%":"—"}</td>
+          <td class="up">${fmtUSD(l.credit*l.contracts*(l.side==="short"?1:-1))}</td>
+          <td>${tag}</td></tr>`;
+      });
+    h += `</tbody></table>
+      <div class="kv" style="margin:4px 0 10px">
+        <span class="k">net option credit collected</span><span class="up">${fmtUSD(g.credit)}</span>
+      </div>`;
+  });
+  $("pos-body").innerHTML = h;
+  $("pos-note").textContent = S.live ? "live quotes" : "demo quotes";
+}
+
+function renderRisk(flags){
+  $("risk-body").innerHTML = flags.map(f=>{
+    const cls = f.lvl==="crit"?"crit":f.lvl==="warnv"?"warnv":"info";
+    const label = f.lvl==="crit"?"CRITICAL":f.lvl==="warnv"?"WATCH":"OK";
+    return `<div class="riskline"><span class="lvl ${cls}">${label}</span><span class="txt">${f.txt}</span></div>`;
+  }).join("");
+}
+
+function renderMonitor(){
+  const rows = CONFIG.WATCHLIST.map(s=>{
+    const q = S.quotes[s];
+    if(!q) return `<tr data-sym="${s}"><td class="sym">${s}</td><td colspan="4" class="dim">no data</td></tr>`;
+    return `<tr data-sym="${s}" class="${s===S.sym?"sel":""}">
+      <td class="sym">${s}</td>
+      <td>${q.price?.toFixed(2) ?? "—"}</td>
+      <td class="${sgn(q.chg)}">${arrow(q.chg)} ${q.chg?.toFixed(2) ?? "—"}</td>
+      <td class="${sgn(q.chgPct)}">${q.chgPct?.toFixed(2) ?? "—"}%</td>
+      <td class="dim">${q.vol?(q.vol/1e6).toFixed(1)+"M":"—"}</td></tr>`;
+  }).join("");
+  $("mon-body").innerHTML = `<table><thead><tr><th>sym</th><th>last</th><th>chg</th><th>%</th><th>vol</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("mon-body").querySelectorAll("tr[data-sym]").forEach(tr=>{
+    tr.onclick = () => selectSymbol(tr.dataset.sym);
+  });
+}
+
+function renderChart(){
+  const cv = $("chart"), h = S.history[S.sym];
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, ht = cv.clientHeight;
+  cv.width = w*dpr; cv.height = ht*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  g.clearRect(0,0,w,ht);
+  $("chart-title").textContent = `${S.sym} — 180 sessions`;
+  if(!h || h.length<2){
+    g.fillStyle="#7d7566"; g.font="11px monospace";
+    g.fillText("no price history for "+S.sym, 8, 18); return;
+  }
+  const xs = h.map(r=>r.c);
+  const lo = Math.min(...xs), hi = Math.max(...xs), pad = 10;
+  const X = i => pad + i*(w-2*pad)/(h.length-1);
+  const Y = v => ht-pad - (v-lo)*(ht-2*pad)/((hi-lo)||1);
+
+  // strike lines from the book
+  BOOK.filter(l=>l.sym===S.sym && l.type!=="stock").forEach(l=>{
+    if(l.strike<lo||l.strike>hi) return;
+    g.strokeStyle = l.side==="short" ? "#ff4d4d" : "#3ddc84";
+    g.setLineDash([3,3]); g.lineWidth=1;
+    g.beginPath(); g.moveTo(0,Y(l.strike)); g.lineTo(w,Y(l.strike)); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = g.strokeStyle; g.font="10px monospace";
+    g.fillText(`${l.type.toUpperCase()} ${l.strike}`, 4, Y(l.strike)-2);
+  });
+  // average cost line
+  const eq = BOOK.find(l=>l.sym===S.sym && l.type==="stock");
+  if(eq && eq.avg>=lo && eq.avg<=hi){
+    g.strokeStyle="#ffa028"; g.setLineDash([1,2]);
+    g.beginPath(); g.moveTo(0,Y(eq.avg)); g.lineTo(w,Y(eq.avg)); g.stroke(); g.setLineDash([]);
+    g.fillStyle="#ffa028"; g.font="10px monospace";
+    g.fillText("avg "+eq.avg.toFixed(2), w-70, Y(eq.avg)-2);
+  }
+  // price
+  g.strokeStyle="#e8e0d0"; g.lineWidth=1.2; g.beginPath();
+  h.forEach((r,i)=> i?g.lineTo(X(i),Y(r.c)):g.moveTo(X(i),Y(r.c)));
+  g.stroke();
+  g.fillStyle="#7d7566"; g.font="10px monospace";
+  g.fillText(hi.toFixed(2), w-46, 12);
+  g.fillText(lo.toFixed(2), w-46, ht-4);
+}
+
+function renderMacro(){
+  if(!S.macro.length){
+    $("macro-body").innerHTML = `<div class="empty">No macro feed connected. Point <b>fetchMacro()</b> at the CPI / EFFR / GDP feed you already run in the Analyzer.</div>`;
+    return;
+  }
+  $("macro-body").innerHTML = S.macro.map(m=>
+    `<div class="kv"><span class="k">${m.k}</span><span class="${sgn(m.chg)}">${m.v}</span></div>`).join("");
+}
+
+function renderOpt(){
+  $("opt-body").innerHTML = `<div class="empty">
+    No options feed connected. This panel ranks candidates by IV rank, IV/HV ratio, realised volatility risk premium and spread width — none of which can be computed from quote data alone.<br><br>
+    Implement <b>fetchChain(sym)</b> against a historical options source (Polygon, ORATS, CBOE DataShop, Databento) and this panel fills in.<br><br>
+    Until then, treat every premium decision as unvalidated.
+  </div>`;
+}
+
+function renderNews(){
+  if(!S.news.length){
+    $("news-body").innerHTML = `<div class="empty">${keyed() ? "No headlines returned for the current watchlist." : "No news feed in demo mode. Set a key with <b>KEY your_key</b> to switch to live data."}</div>`;
+    return;
+  }
+  $("news-body").innerHTML = S.news.map(n=>
+    `<a class="news" href="${n.url}" target="_blank" rel="noopener">
+      <span class="t">${(n.t||"").slice(5,16)}</span>
+      <span class="s">${n.sym||""}</span> ${n.title}
+      <span class="t"> — ${n.site||""}</span>
+    </a>`).join("");
+}
+
+/* market hours: 09:30–16:00 America/New_York, Mon–Fri (no holiday calendar) */
+function marketState(){
+  const now = new Date();
+  const et = new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
+  const day = et.getDay(), mins = et.getHours()*60 + et.getMinutes();
+  if(day===0||day===6) return {s:"CLOSED", cls:""};
+  if(mins>=570 && mins<960) return {s:"OPEN", cls:"live"};
+  if(mins>=240 && mins<570) return {s:"PRE", cls:"demo"};
+  if(mins>=960 && mins<1200) return {s:"POST", cls:"demo"};
+  return {s:"CLOSED", cls:""};
+}
+function tick(){
+  const now = new Date();
+  $("st-clock").textContent =
+    now.toLocaleTimeString("en-GB",{timeZone:"Asia/Jerusalem"}) + " IL  |  " +
+    now.toLocaleTimeString("en-GB",{timeZone:"America/New_York"}) + " ET";
+  const m = marketState();
+  const el = $("st-mkt"); el.textContent = "MKT " + m.s; el.className = "pill " + m.cls;
+}
+
+function toast(msg){
+  const t = $("toast"); t.textContent = msg; t.style.display="block";
+  clearTimeout(toast._h); toast._h = setTimeout(()=>t.style.display="none", 4000);
+}
+
+/* ============================================================
+   8. ORCHESTRATION
+   ============================================================ */
+function selectSymbol(sym){
+  S.sym = sym.toUpperCase();
+  $("st-sym").textContent = S.sym;
+  if(!CONFIG.WATCHLIST.includes(S.sym)) CONFIG.WATCHLIST.unshift(S.sym);
+  renderMonitor();
+  loadHistory().then(renderChart);
+}
+
+async function loadHistory(){
+  try{ S.history[S.sym] = await fetchHistory(S.sym); }
+  catch(e){ S.history[S.sym] = null; toast("history failed for "+S.sym+": "+e.message); }
+}
+
+async function refresh(){
+  const syms = Array.from(new Set([...CONFIG.WATCHLIST, ...BOOK.map(b=>b.sym), S.sym]));
+
+  if(keyed()){
+    try{
+      const q = await fetchQuotes(syms);
+      if(!q || !Object.keys(q).length) throw new Error("provider returned an empty response");
+      S.quotes = q; S.dataOk = true; S.lastError = null;
+    }catch(e){
+      S.dataOk = false; S.lastError = e.message;
+      syms.forEach(s=>S.quotes[s]=demoQuote(s));
+    }
+  } else {
+    S.dataOk = false; S.lastError = "no API key set";
+    syms.forEach(s=>S.quotes[s]=demoQuote(s));
+  }
+  S.live = S.dataOk;
+
+  const mode = $("st-mode");
+  mode.textContent = S.dataOk ? "LIVE" : "DEMO";
+  mode.className = "pill gear " + (S.dataOk ? "live" : "demo");
+  const err = $("st-err");
+  if(S.dataOk){ err.style.display = "none"; }
+  else { err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + S.lastError; }
+
+  if(!S.history[S.sym]) await loadHistory();
+  try{ S.news = await fetchNews(syms.slice(0,8)); }catch(e){ S.news=[]; }
+  try{ S.macro = await fetchMacro(); }catch(e){ S.macro=[]; }
+
+  const groups = analyseBook(BOOK, S.quotes);
+  renderPositions(groups);
+  renderRisk(riskFlags(groups));
+  renderMonitor();
+  renderChart();
+  renderMacro();
+  renderOpt();
+  renderNews();
+}
+
+/* ============================================================
+   9. COMMAND LINE
+   ============================================================ */
+const HELP = [
+  "TICKER            load a symbol into the chart and monitor",
+  "KEY <apikey>      switch to live data (Financial Modeling Prep)",
+  "DEMO              clear the key and go back to synthetic data",
+  "ADD STOCK SYM QTY AVG",
+  "ADD CALL|PUT SYM SHORT|LONG CONTRACTS STRIKE YYYY-MM-DD CREDIT",
+  "DEL <id>          remove a book line (ids are e1, o1, o2, ...)",
+  "BOOK              print the raw book as JSON",
+  "RESET             restore the seeded book",
+  "R                 force refresh",
+];
+function runCommand(raw){
+  const p = raw.trim().split(/\s+/); if(!p[0]) return;
+  const c = p[0].toUpperCase();
+
+  if(c==="HELP"){ toast(HELP.join("  |  ")); console.log(HELP.join("\n")); return; }
+  if(c==="KEY"){ CONFIG.FMP_KEY=p[1]||""; store.set("ldr_key",CONFIG.FMP_KEY); toast("key set, switching to live"); refresh(); return; }
+  if(c==="DEMO"){ CONFIG.FMP_KEY=""; store.set("ldr_key",""); toast("demo mode"); refresh(); return; }
+  if(c==="R"){ refresh(); return; }
+  if(c==="BOOK"){ console.log(JSON.stringify(BOOK,null,2)); toast("book printed to console"); return; }
+  if(c==="RESET"){ try{localStorage.removeItem("ldr_book");}catch(e){} toast("reload the page to restore the seeded book"); return; }
+  if(c==="DEL"){
+    const n = BOOK.length; BOOK = BOOK.filter(b=>b.id!==p[1]);
+    store.set("ldr_book",BOOK); toast(n===BOOK.length?"no line with id "+p[1]:"removed "+p[1]); refresh(); return;
+  }
+  if(c==="ADD"){
+    const t=(p[1]||"").toLowerCase();
+    try{
+      if(t==="stock"){
+        BOOK.push({id:"e"+Date.now(),type:"stock",side:"long",sym:p[2].toUpperCase(),qty:+p[3],avg:+p[4]});
+      } else if(t==="call"||t==="put"){
+        BOOK.push({id:"o"+Date.now(),type:t,side:p[3].toLowerCase(),sym:p[2].toUpperCase(),
+                   contracts:+p[4],strike:+p[5],expiry:p[6],credit:+p[7]});
+      } else { toast("ADD needs STOCK, CALL or PUT"); return; }
+      store.set("ldr_book",BOOK); toast("added"); refresh();
+    }catch(e){ toast("could not parse that line. HELP shows the format."); }
+    return;
+  }
+  if(/^[A-Z.\-]{1,6}$/.test(c)){ selectSymbol(c); return; }
+  toast("unknown command: "+c+". HELP shows the list.");
+}
+
+$("cmd").addEventListener("keydown", e=>{
+  if(e.key==="Enter"){ runCommand(e.target.value); e.target.value=""; }
+});
+document.addEventListener("keydown", e=>{
+  if(e.key==="/" && document.activeElement!==$("cmd")){ e.preventDefault(); $("cmd").focus(); }
+});
+window.addEventListener("resize", ()=>renderChart());
+
+/* ============================================================
+   10. SETTINGS OVERLAY — set the key without editing the file
+   ============================================================ */
+function openSetup(){
+  $("setup-key").value = CONFIG.FMP_KEY || "";
+  $("setup").classList.add("on");
+  setTimeout(()=>$("setup-key").focus(), 50);
+}
+function closeSetup(){ $("setup").classList.remove("on"); }
+
+$("setup-save").onclick = () => {
+  const k = $("setup-key").value.trim();
+  if(k.length < 8){ toast("that key looks too short — check for a missing character"); return; }
+  CONFIG.FMP_KEY = k;
+  store.set("ldr_key", k);
+  closeSetup();
+  toast("switching to live data");
+  refresh();
+};
+$("setup-demo").onclick = () => { closeSetup(); toast("staying in demo — every number on screen is synthetic"); };
+$("st-mode").onclick = openSetup;
+$("setup").onclick = e => { if(e.target.id === "setup") closeSetup(); };
+$("setup-key").addEventListener("keydown", e=>{ if(e.key==="Enter") $("setup-save").click(); });
+
+/* ============================================================
+   11. BOOT
+   ============================================================ */
+tick(); setInterval(tick, 1000);
+if(!keyed()) openSetup();
+refresh();
+setInterval(refresh, CONFIG.REFRESH_SECONDS*1000);
+</script>
+</body>
+</html>
