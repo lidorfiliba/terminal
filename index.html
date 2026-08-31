@@ -155,10 +155,44 @@ canvas{display:block;width:100%;height:100%}
 }
 #setup button.ghost{background:#000;color:var(--text-dim);border:1px solid var(--line)}
 #statusbar .gear{cursor:pointer;text-decoration:underline}
+.hbtn{
+  margin-left:6px;background:#000;color:var(--amber);border:1px solid var(--amber);
+  font-family:var(--font);font-size:10.5px;padding:0 6px;cursor:pointer;
+}
+.rowbtn{
+  background:transparent;border:1px solid var(--line);color:var(--amber);
+  font-family:var(--font);font-size:10.5px;padding:0 5px;cursor:pointer;
+}
+#legmodal{
+  position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:60;
+  display:none;align-items:center;justify-content:center;padding:16px;overflow:auto;
+}
+#legmodal.on{display:flex}
+#legmodal .box{background:var(--panel);border:1px solid var(--amber-dim);max-width:440px;width:100%}
+#legmodal h3{background:var(--amber-dim);color:#000;font-size:12px;padding:3px 8px;font-weight:600}
+#legmodal .in{padding:10px}
+.frow{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.frow label{flex:0 0 130px;color:var(--text-dim)}
+.frow input,.frow select{
+  flex:1 1 auto;background:#000;border:1px solid var(--line);color:var(--amber);
+  font-family:var(--font);font-size:14px;padding:6px;outline:0;min-width:0;
+}
+.frow input:focus,.frow select:focus{border-color:var(--amber)}
+#legmodal .btns{display:flex;gap:8px;margin-top:10px}
+#legmodal button{
+  flex:1;background:var(--amber);border:0;color:#000;font-family:var(--font);
+  font-size:13px;font-weight:600;padding:9px;cursor:pointer;
+}
+#legmodal button.ghost{background:#000;color:var(--text-dim);border:1px solid var(--line)}
 @media(max-width:900px){
-  #grid{grid-template-columns:repeat(6,1fr);grid-auto-rows:auto;overflow:auto}
-  .c3,.c4,.c5,.c7,.c8{grid-column:span 6}
-  .panel{min-height:180px}
+  #grid{grid-template-columns:1fr;grid-auto-rows:auto;overflow:auto}
+  .c3,.c4,.c5,.c6,.c7,.c8,.c12{grid-column:span 1}
+  .r2{grid-row:span 1}
+  .panel{min-height:auto}
+  .panel .body{max-height:46vh}
+  .panel:has(canvas) .body{height:36vh;max-height:none}
+  .frow{flex-wrap:wrap}
+  .frow label{flex:1 1 100%}
 }
 </style>
 </head>
@@ -167,7 +201,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 6</span>
+    <span class="pill" id="st-build">BUILD 7</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -180,7 +214,11 @@ canvas{display:block;width:100%;height:100%}
   <div id="grid">
 
     <section class="panel c7 r2">
-      <h2><span class="code">POS</span> Positions and open option legs <span class="note" id="pos-note"></span></h2>
+      <h2><span class="code">POS</span> Positions and open option legs
+        <span class="note" id="pos-note"></span>
+        <button class="hbtn" id="pos-add">+ add</button>
+        <button class="hbtn" id="pos-export">export</button>
+      </h2>
       <div class="body" id="pos-body"></div>
     </section>
 
@@ -223,6 +261,37 @@ canvas{display:block;width:100%;height:100%}
   </div>
 </div>
 <div id="toast"></div>
+
+<div id="legmodal">
+  <div class="box">
+    <h3 id="leg-title">Add a position</h3>
+    <div class="in">
+      <div class="frow"><label>Kind</label>
+        <select id="leg-type">
+          <option value="stock">Shares</option>
+          <option value="call">Call option</option>
+          <option value="put">Put option</option>
+        </select></div>
+      <div class="frow"><label>Direction</label>
+        <select id="leg-side">
+          <option value="long">Long / bought</option>
+          <option value="short">Short / sold</option>
+        </select></div>
+      <div class="frow"><label>Symbol</label><input id="leg-sym" placeholder="RKLB"></div>
+      <div class="frow" id="row-qty"><label>Shares</label><input id="leg-qty" inputmode="decimal" placeholder="200"></div>
+      <div class="frow" id="row-avg"><label>Average cost</label><input id="leg-avg" inputmode="decimal" placeholder="79.70"></div>
+      <div class="frow" id="row-con"><label>Contracts</label><input id="leg-con" inputmode="decimal" placeholder="2"></div>
+      <div class="frow" id="row-strike"><label>Strike</label><input id="leg-strike" inputmode="decimal" placeholder="110"></div>
+      <div class="frow" id="row-exp"><label>Expiry</label><input id="leg-exp" type="date"></div>
+      <div class="frow" id="row-credit"><label>Premium per contract</label><input id="leg-credit" inputmode="decimal" placeholder="331"></div>
+      <div class="btns">
+        <button id="leg-save">Save</button>
+        <button id="leg-del" class="ghost">Delete</button>
+        <button id="leg-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="setup">
   <div class="box">
@@ -535,12 +604,13 @@ function renderPositions(groups){
       <th>last</th><th>qty</th><th>strike</th><th>dte</th><th>dist</th><th>credit</th><th>status</th>
     </tr></thead><tbody>`;
     const eqPnl = (px!=null && g.avg!=null) ? (px-g.avg)*g.shares : null;
+    const eqLeg = g.legs.find(l=>l.type==="stock");
     h += `<tr><td class="sym">EQUITY</td>
       <td>${px!=null?px.toFixed(2):"—"}</td>
       <td>${g.shares}</td><td class="dim">—</td><td class="dim">—</td>
       <td class="dim">—</td>
       <td class="${eqPnl!=null?sgn(eqPnl):"dim"}">${eqPnl!=null?fmtUSD(eqPnl):"—"}</td>
-      <td class="dim">open</td></tr>`;
+      <td>${eqLeg?`<button class="rowbtn" data-edit="${eqLeg.id}">edit</button>`:""}</td></tr>`;
     g.legs.filter(l=>l.type!=="stock")
       .sort((a,b)=>a.strike-b.strike)
       .forEach(l=>{
@@ -560,7 +630,7 @@ function renderPositions(groups){
           <td class="${d<=7?"warn":""}">${d}</td>
           <td class="${dist!=null?(dist>0?"up":"down"):"dim"}">${dist!=null?dist.toFixed(1)+"%":"—"}</td>
           <td class="up">${fmtUSD(l.credit*l.contracts*(l.side==="short"?1:-1))}</td>
-          <td>${tag}</td></tr>`;
+          <td>${tag} <button class="rowbtn" data-edit="${l.id}">edit</button></td></tr>`;
       });
     h += `</tbody></table>
       <div class="kv" style="margin:4px 0 10px">
@@ -568,6 +638,9 @@ function renderPositions(groups){
       </div>`;
   });
   $("pos-body").innerHTML = h;
+  $("pos-body").querySelectorAll("button[data-edit]").forEach(b=>{
+    b.onclick = () => openLeg(b.dataset.edit);
+  });
   $("pos-note").textContent = S.live ? "live quotes" : "demo quotes";
 }
 
@@ -831,6 +904,87 @@ $("setup-demo").onclick = () => { closeSetup(); toast("staying in demo — every
 $("st-mode").onclick = openSetup;
 $("setup").onclick = e => { if(e.target.id === "setup") closeSetup(); };
 $("setup-key").addEventListener("keydown", e=>{ if(e.key==="Enter") $("setup-save").click(); });
+
+/* ============================================================
+   10b. POSITION EDITOR
+   ============================================================ */
+let EDIT_ID = null;
+
+function legFieldsFor(type){
+  const isStock = type === "stock";
+  ["row-qty","row-avg"].forEach(r=>$(r).style.display = isStock ? "" : "none");
+  ["row-con","row-strike","row-exp","row-credit"].forEach(r=>$(r).style.display = isStock ? "none" : "");
+}
+$("leg-type").onchange = () => legFieldsFor($("leg-type").value);
+
+function openLeg(id){
+  EDIT_ID = id || null;
+  const l = id ? BOOK.find(b=>b.id===id) : null;
+  $("leg-title").textContent = l ? "Edit position" : "Add a position";
+  $("leg-del").style.display = l ? "" : "none";
+  $("leg-type").value  = l ? l.type : "stock";
+  $("leg-side").value  = l ? l.side : "long";
+  $("leg-sym").value   = l ? l.sym : (S.sym || "");
+  $("leg-qty").value   = l && l.qty != null ? l.qty : "";
+  $("leg-avg").value   = l && l.avg != null ? l.avg : "";
+  $("leg-con").value   = l && l.contracts != null ? l.contracts : "";
+  $("leg-strike").value= l && l.strike != null ? l.strike : "";
+  $("leg-exp").value   = l && l.expiry ? l.expiry : "";
+  $("leg-credit").value= l && l.credit != null ? l.credit : "";
+  legFieldsFor($("leg-type").value);
+  $("legmodal").classList.add("on");
+}
+function closeLeg(){ $("legmodal").classList.remove("on"); EDIT_ID = null; }
+
+$("pos-add").onclick = () => openLeg(null);
+$("leg-cancel").onclick = closeLeg;
+$("legmodal").onclick = e => { if(e.target.id === "legmodal") closeLeg(); };
+
+$("leg-del").onclick = () => {
+  if(!EDIT_ID) return;
+  BOOK = BOOK.filter(b=>b.id !== EDIT_ID);
+  store.set("ldr_book", BOOK);
+  closeLeg(); refresh();
+};
+
+$("leg-save").onclick = () => {
+  const type = $("leg-type").value;
+  const sym  = $("leg-sym").value.trim().toUpperCase();
+  if(!sym){ toast("a symbol is required"); return; }
+  let leg;
+  if(type === "stock"){
+    const qty = parseFloat($("leg-qty").value), avg = parseFloat($("leg-avg").value);
+    if(!isFinite(qty) || !isFinite(avg)){ toast("shares and average cost are both required"); return; }
+    leg = { type, side:$("leg-side").value, sym, qty, avg };
+  } else {
+    const contracts = parseFloat($("leg-con").value);
+    const strike = parseFloat($("leg-strike").value);
+    const credit = parseFloat($("leg-credit").value);
+    const expiry = $("leg-exp").value;
+    if(!isFinite(contracts) || !isFinite(strike) || !expiry){
+      toast("contracts, strike and expiry are all required"); return;
+    }
+    leg = { type, side:$("leg-side").value, sym, contracts, strike, expiry,
+            credit: isFinite(credit) ? credit : 0 };
+  }
+  if(EDIT_ID){
+    const i = BOOK.findIndex(b=>b.id === EDIT_ID);
+    BOOK[i] = { ...leg, id: EDIT_ID };
+  } else {
+    BOOK.push({ ...leg, id: (type==="stock"?"e":"o") + Date.now() });
+  }
+  store.set("ldr_book", BOOK);
+  closeLeg(); refresh();
+};
+
+$("pos-export").onclick = () => {
+  const blob = new Blob([JSON.stringify(BOOK,null,2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ldr-book-" + new Date().toISOString().slice(0,10) + ".json";
+  a.click();
+  toast("book exported");
+};
 
 /* ============================================================
    11. BOOT
