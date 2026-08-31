@@ -234,7 +234,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 16</span>
+    <span class="pill" id="st-build">BUILD 17</span>
     <span class="pill" id="st-calls">API 0</span>
     <span class="pill" id="st-age">never synced</span>
     <button class="hbtn" id="st-sync">sync now</button>
@@ -478,9 +478,22 @@ async function unseal(blob, pass){
   const pt  = await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(blob.i)}, key, unb64(blob.c));
   return JSON.parse(new TextDecoder().decode(pt));
 }
-async function saveState(){
-  if(!PASS) return;
+let VAULT_READY = false;    // true only once a vault has been created or unlocked
+
+async function saveState(opts){
+  if(!PASS || !VAULT_READY) return;
+  // Guard: a bug or a mis-click must never wipe a book that has content.
+  if(!BOOK.length && !(opts && opts.allowEmpty)){
+    const prev = store.get("ldr_vault", null);
+    if(prev && store.get("ldr_had_positions", false)){
+      toast("not saving an empty book over your stored positions — use RESET if you meant to clear it");
+      return;
+    }
+  }
   try{
+    const current = store.get("ldr_vault", null);
+    if(current) store.set("ldr_vault_prev", current);   // one step of undo
+    store.set("ldr_had_positions", BOOK.length > 0);
     store.set("ldr_vault", await seal(
       { book:BOOK, real:REAL, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY,
         cache:{ quotes:S.quotes, history:S.history, news:S.news, macro:S.macro,
@@ -874,7 +887,7 @@ const sgn = n => n>0?"up":n<0?"down":"dim";
 const arrow = n => n>0?"▲":n<0?"▼":" ";
 
 function renderPositions(groups){
-  if(!groups.length){ $("pos-body").innerHTML = `<div class="empty">No positions loaded. Edit the <b>BOOK</b> array near the top of this file, or use <b>ADD</b> from the command line.</div>`; return; }
+  if(!groups.length){ $("pos-body").innerHTML = `<div class="empty">No positions yet. Use <b>+ add</b> above, or <b>import</b> a book you exported earlier.</div>`; return; }
   let h = "";
   groups.forEach(g=>{
     const px = g.px;
@@ -1289,6 +1302,7 @@ const HELP = [
   "BOOK              print the raw book as JSON",
   "RESET             restore the seeded book",
   "R                 force refresh",
+  "RECOVER           restore the previous saved vault",
 ];
 function runCommand(raw){
   const p = raw.trim().split(/\s+/); if(!p[0]) return;
@@ -1298,9 +1312,21 @@ function runCommand(raw){
   if(c==="KEY"){ CONFIG.FMP_KEY=p[1]||""; saveState(); toast("FMP key set"); refresh(); return; }
   if(c==="TD"){ CONFIG.TD_KEY=p[1]||""; saveState(); toast("Twelve Data key set"); refresh(); return; }
   if(c==="DEMO"){ CONFIG.FMP_KEY=""; CONFIG.TD_KEY=""; saveState(); toast("demo mode"); refresh(); return; }
-  if(c==="R"){ refresh(); return; }
+  if(c==="R"){ refresh(true); return; }
+  if(c==="RECOVER"){
+    const prev = store.get("ldr_vault_prev", null);
+    if(!prev){ toast("no previous vault stored"); return; }
+    unseal(prev, PASS).then(d=>{
+      BOOK = Array.isArray(d.book) ? d.book : [];
+      REAL = Array.isArray(d.real) ? d.real : [];
+      saveState({allowEmpty:true});
+      rerender();
+      toast("restored " + BOOK.length + " positions from the previous save");
+    }).catch(e=>toast("could not restore: " + e.message));
+    return;
+  }
   if(c==="BOOK"){ console.log(JSON.stringify(BOOK,null,2)); toast("book printed to console"); return; }
-  if(c==="RESET"){ BOOK=[]; saveState(); toast("book cleared"); refresh(); return; }
+  if(c==="RESET"){ BOOK=[]; saveState({allowEmpty:true}); toast("book cleared"); rerender(); return; }
   if(c==="DEL"){
     const n = BOOK.length; BOOK = BOOK.filter(b=>b.id!==p[1]);
     saveState(); toast(n===BOOK.length?"no line with id "+p[1]:"removed "+p[1]); refresh(); return;
@@ -1603,7 +1629,8 @@ async function attemptUnlock(){
   if(LOCK_MODE === "create"){
     if(pass !== $("lock-pass2").value){ $("lock-note").textContent = "The two entries do not match."; return; }
     PASS = pass;
-    await saveState();
+    VAULT_READY = true;
+    await saveState({allowEmpty:true});
     $("lock").classList.remove("on");
     if(!anyKey()) openSetup();
     refresh();
@@ -1614,6 +1641,7 @@ async function attemptUnlock(){
   try{
     const data = await unseal(blob, pass);
     PASS = pass;
+    VAULT_READY = true;
     BOOK = Array.isArray(data.book) ? data.book : [];
     REAL = Array.isArray(data.real) ? data.real : [];
     CONFIG.FMP_KEY = data.fmp || "";
