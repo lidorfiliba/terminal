@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark only">
 <title>LDR TERMINAL</title>
 <style>
 :root{
+  color-scheme: dark only;
+  forced-color-adjust: none;
   --bg:#000000;
   --panel:#080808;
   --line:#2a2419;
@@ -164,7 +167,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 4</span>
+    <span class="pill" id="st-build">BUILD 5</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -278,6 +281,7 @@ BOOK = store.get("ldr_book", BOOK);
 const S = {
   sym: CONFIG.DEFAULT_SYMBOL,
   quotes: {},        // sym -> {price, chg, chgPct, name, ts}
+  quoteErrors: {},   // sym -> why that symbol failed
   history: {},       // sym -> [{d, c}]
   news: [],
   macro: [],
@@ -329,17 +333,20 @@ function demoHistory(sym){
 }
 
 let API_CALLS = 0;
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
 async function fetchQuotes(syms){
   if(!keyed()){ const o={}; syms.forEach(s=>o[s]=demoQuote(s)); return o; }
   const o = {};
-  let firstError = null;
+  S.quoteErrors = {};
+  let firstError = null, i = 0;
   for(const s of syms){
+    if(i++) await sleep(300);          // free plans rate-limit rapid bursts
     try{
       API_CALLS++;
       const j = await getJSON(`${FMP}/quote?symbol=${s}&apikey=${CONFIG.FMP_KEY}`);
       const q = Array.isArray(j) ? j[0] : j;
-      if(!q || q.price == null) continue;
+      if(!q || q.price == null){ S.quoteErrors[s] = "empty response"; continue; }
       o[s] = {
         price:q.price, chg:q.change,
         chgPct: q.changePercentage ?? q.changesPercentage,
@@ -347,7 +354,10 @@ async function fetchQuotes(syms){
         vol:q.volume, avgVol:q.avgVolume,
         y52h:q.yearHigh, y52l:q.yearLow, mcap:q.marketCap, demo:false
       };
-    }catch(e){ if(!firstError) firstError = e; }
+    }catch(e){
+      S.quoteErrors[s] = e.message;
+      if(!firstError) firstError = e;
+    }
   }
   if(!Object.keys(o).length) throw (firstError || new Error("no quotes returned"));
   return o;
@@ -527,7 +537,7 @@ function renderRisk(flags){
 function renderMonitor(){
   const rows = CONFIG.WATCHLIST.map(s=>{
     const q = S.quotes[s];
-    if(!q) return `<tr data-sym="${s}"><td class="sym">${s}</td><td colspan="4" class="dim">no data</td></tr>`;
+    if(!q) return `<tr data-sym="${s}"><td class="sym">${s}</td><td colspan="4" class="down" style="text-align:left;white-space:normal">${(S.quoteErrors||{})[s] || "no data"}</td></tr>`;
     return `<tr data-sym="${s}" class="${s===S.sym?"sel":""}">
       <td class="sym">${s}</td>
       <td>${q.price?.toFixed(2) ?? "—"}</td>
