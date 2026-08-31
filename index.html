@@ -182,6 +182,20 @@ canvas{display:block;width:100%;height:100%}
   width:100%;background:var(--amber);border:0;color:#000;font-family:var(--font);
   font-size:14px;font-weight:600;padding:10px;cursor:pointer;
 }
+#closedmodal{
+  position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:70;
+  display:none;align-items:center;justify-content:center;padding:16px;overflow:auto;
+}
+#closedmodal.on{display:flex}
+#closedmodal .box{background:var(--panel);border:1px solid var(--amber-dim);max-width:440px;width:100%}
+#closedmodal h3{background:var(--amber-dim);color:#000;font-size:12px;padding:3px 8px;font-weight:600}
+#closedmodal .in{padding:10px}
+#closedmodal .btns{display:flex;gap:8px;margin-top:10px}
+#closedmodal button{
+  flex:1;background:var(--amber);border:0;color:#000;font-family:var(--font);
+  font-size:13px;font-weight:600;padding:9px;cursor:pointer;
+}
+#closedmodal button.ghost{background:#000;color:var(--text-dim);border:1px solid var(--line)}
 #legmodal{
   position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:60;
   display:none;align-items:center;justify-content:center;padding:16px;overflow:auto;
@@ -220,7 +234,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 11</span>
+    <span class="pill" id="st-build">BUILD 12</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -270,7 +284,10 @@ canvas{display:block;width:100%;height:100%}
     </section>
 
     <section class="panel c12">
-      <h2><span class="code">ECN</span> Position economics <span class="note">premium banked vs shares</span></h2>
+      <h2><span class="code">ECN</span> Position economics
+        <span class="note">premium banked vs shares</span>
+        <button class="hbtn" id="econ-log">+ log a closed trade</button>
+      </h2>
       <div class="body" id="econ-body"></div>
     </section>
 
@@ -300,6 +317,37 @@ canvas{display:block;width:100%;height:100%}
         <button id="lock-go">Unlock</button>
       </div>
       <p id="lock-note" style="margin-top:10px"></p>
+    </div>
+  </div>
+</div>
+
+<div id="closedmodal">
+  <div class="box">
+    <h3>Log a closed trade</h3>
+    <div class="in">
+      <p style="color:var(--text-dim);white-space:normal;margin-bottom:8px">
+        Enter a call or put you have already closed or let expire. This is what makes the
+        effective basis and the realised total true.</p>
+      <div class="frow"><label>Symbol</label><input id="cl-sym" placeholder="AAPL"></div>
+      <div class="frow"><label>Kind</label>
+        <select id="cl-type">
+          <option value="call">Short call</option>
+          <option value="put">Short put</option>
+          <option value="longcall">Long call</option>
+          <option value="longput">Long put</option>
+          <option value="stock">Shares</option>
+        </select></div>
+      <div class="frow"><label>Contracts</label><input id="cl-con" inputmode="decimal" placeholder="2"></div>
+      <div class="frow"><label>Strike</label><input id="cl-strike" inputmode="decimal" placeholder="optional"></div>
+      <div class="frow"><label>Premium received</label><input id="cl-open" inputmode="decimal" placeholder="per contract, e.g. 331"></div>
+      <div class="frow"><label>Closed at</label><input id="cl-close" inputmode="decimal" placeholder="per share, 0 if expired"></div>
+      <div class="frow"><label>Date closed</label><input id="cl-date" type="date"></div>
+      <div class="frow"><label>Net result</label><input id="cl-net" inputmode="decimal" placeholder="leave blank to compute"></div>
+      <div class="btns">
+        <button id="cl-save">Record</button>
+        <button id="cl-cancel" class="ghost">Cancel</button>
+      </div>
+      <p id="cl-note" style="color:var(--text-dim);margin-top:8px;white-space:normal"></p>
     </div>
   </div>
 </div>
@@ -737,23 +785,42 @@ function economics(g){
     ? sharesPnl + totalPremium - buybackCost
     : (sharesPnl != null ? sharesPnl + totalPremium : null);
 
-  // what happens if each short call is assigned
-  const assignment = openLegs
-    .filter(l=>l.type==="call" && l.side==="short")
-    .map(l=>{
-      const covered = Math.min(g.shares, l.contracts*100);
-      const onShares = g.avg != null ? (l.strike - g.avg) * covered : null;
-      const q = S.legQuotes[l.id];
-      const dteN = q && q.dte != null ? q.dte : dte(l.expiry);
-      const yieldPct = (g.px && dteN > 0)
-        ? (l.credit / (l.strike*100)) * (365/dteN) * 100 : null;
-      return { strike:l.strike, covered, dte:dteN,
-               net: onShares != null ? onShares + totalPremium : null,
-               yieldPct, uncovered: l.contracts*100 - covered };
+  // Total profit or loss at expiry for a given underlying price.
+  // Shares are marked to P; every short call pays out max(0, P - strike).
+  // This treats covered and uncovered legs the same way, which is the only
+  // way to see what a move above the higher strike actually costs.
+  const payoffAt = P => {
+    let v = (g.avg != null) ? (P - g.avg) * g.shares : 0;
+    openLegs.forEach(l=>{
+      const intrinsic = l.type === "call" ? Math.max(0, P - l.strike)
+                                          : Math.max(0, l.strike - P);
+      const sign = l.side === "short" ? -1 : 1;
+      v += sign * intrinsic * 100 * l.contracts;
     });
+    return v + totalPremium;
+  };
+
+  const strikes = [...new Set(openLegs.map(l=>l.strike))].sort((a,b)=>a-b);
+  const top = strikes.length ? Math.max(...strikes) : (g.px || 0);
+  const scenarios = [...new Set([
+    g.px, ...strikes, +(top*1.25).toFixed(0), +(top*1.5).toFixed(0)
+  ].filter(x=>x!=null && isFinite(x)))].sort((a,b)=>a-b)
+   .map(P => ({ P, pnl: payoffAt(P) }));
+
+  // annualised yield on each open short leg
+  const yields = openLegs.filter(l=>l.side==="short").map(l=>{
+    const q = S.legQuotes[l.id];
+    const dteN = q && q.dte != null ? q.dte : dte(l.expiry);
+    return { strike:l.strike, type:l.type, dte:dteN,
+             yieldPct: dteN>0 ? (l.credit/(l.strike*100))*(365/dteN)*100 : null };
+  });
+
+  const shortCallShares = openLegs.filter(l=>l.type==="call"&&l.side==="short")
+                                  .reduce((a,l)=>a+l.contracts*100,0);
 
   return { realized, openCredit, totalPremium, effBasis, sharesPnl, netNow,
-           buybackCost, priced, openLegs:openLegs.length, assignment };
+           buybackCost, priced, openLegs:openLegs.length,
+           scenarios, yields, shortCallShares, payoffAt };
 }
 
 /* ============================================================
@@ -908,21 +975,53 @@ function renderEcon(groups){
                                                   : "shares plus premium (legs not priced yet)");
     h2 += `</tbody></table>`;
 
-    if(e.assignment.length){
-      h2 += `<table style="margin-bottom:12px"><thead><tr>
-        <th>if called away at</th><th>shares</th><th>dte</th><th>net result</th><th>annualised</th></tr></thead><tbody>`;
-      e.assignment.forEach(a=>{
+    if(e.scenarios.length){
+      h2 += `<table style="margin-bottom:6px"><thead><tr>
+        <th>if ${g.sym} ends at</th><th>total P/L</th><th></th><th></th></tr></thead><tbody>`;
+      e.scenarios.forEach(s=>{
+        const isNow = g.px != null && Math.abs(s.P - g.px) < 0.01;
         h2 += `<tr>
-          <td class="sym">${a.strike}</td>
-          <td>${a.covered}${a.uncovered?` <span class="tag naked">+${a.uncovered} naked</span>`:""}</td>
-          <td>${a.dte}</td>
-          <td class="${a.net!=null?sgn(a.net):""}">${a.net!=null?fmtUSD(a.net):"—"}</td>
-          <td class="dim">${a.yieldPct!=null?a.yieldPct.toFixed(1)+"%":"—"}</td></tr>`;
+          <td class="${isNow?"sym":""}">${s.P.toFixed(2)}${isNow?" (now)":""}</td>
+          <td class="${sgn(s.pnl)}">${fmtUSD(s.pnl)}</td>
+          <td colspan="2" class="dim" style="text-align:left">${
+            isNow ? "everything expires worthless, you keep the premium" : ""}</td></tr>`;
+      });
+      h2 += `</tbody></table>
+        <div class="empty" style="padding:2px">Shares marked to that price, every short leg paid out at intrinsic value, all premium included. ${
+          e.shortCallShares > g.shares
+            ? `<b>${e.shortCallShares - g.shares} shares of the short calls are uncovered</b>, so the loss keeps growing above the top strike.`
+            : ""}</div>`;
+    }
+    if(e.yields.length){
+      h2 += `<table style="margin:8px 0 12px"><thead><tr>
+        <th>open short leg</th><th>dte</th><th>annualised on strike</th><th></th></tr></thead><tbody>`;
+      e.yields.forEach(y=>{
+        h2 += `<tr><td class="sym">${y.type.toUpperCase()} ${y.strike}</td>
+          <td>${y.dte}</td>
+          <td>${y.yieldPct!=null?y.yieldPct.toFixed(1)+"%":"—"}</td><td></td></tr>`;
       });
       h2 += `</tbody></table>`;
     }
   });
+  if(REAL.length){
+    h2 += `<table><thead><tr><th>closed trades</th><th>date</th><th>result</th><th></th></tr></thead><tbody>`;
+    REAL.slice().reverse().forEach((r,i)=>{
+      const idx = REAL.length - 1 - i;
+      h2 += `<tr><td class="sym">${r.sym}</td>
+        <td class="dim">${r.date}</td>
+        <td class="${sgn(r.pnl)}">${fmtUSD(r.pnl)}</td>
+        <td><button class="rowbtn" data-delreal="${idx}">remove</button></td></tr>
+        <tr><td colspan="4" class="dim" style="text-align:left;white-space:normal;border-bottom:1px solid var(--line)">${r.desc}</td></tr>`;
+    });
+    const tot = REAL.reduce((a,r)=>a+r.pnl,0);
+    h2 += `</tbody></table><div class="kv" style="margin-top:4px">
+      <span class="k">total realised, all symbols</span>
+      <span class="${sgn(tot)}">${fmtUSD(tot)}</span></div>`;
+  }
   $("econ-body").innerHTML = h2;
+  $("econ-body").querySelectorAll("button[data-delreal]").forEach(b=>{
+    b.onclick = () => { REAL.splice(+b.dataset.delreal,1); saveState(); refresh(); };
+  });
 }
 
 function renderMacro(){
@@ -1273,6 +1372,53 @@ $("leg-save").onclick = () => {
   }
   saveState();
   closeLeg(); refresh();
+};
+
+$("econ-log").onclick = () => {
+  $("cl-date").value = new Date().toISOString().slice(0,10);
+  $("cl-sym").value = S.sym || "";
+  ["cl-con","cl-strike","cl-open","cl-close","cl-net"].forEach(i=>$(i).value="");
+  $("cl-note").textContent = "";
+  $("closedmodal").classList.add("on");
+  setTimeout(()=>$("cl-sym").focus(), 60);
+};
+$("cl-cancel").onclick = () => $("closedmodal").classList.remove("on");
+$("closedmodal").onclick = e => { if(e.target.id==="closedmodal") $("closedmodal").classList.remove("on"); };
+
+$("cl-save").onclick = () => {
+  const sym = $("cl-sym").value.trim().toUpperCase();
+  if(!sym){ $("cl-note").textContent = "Symbol is required."; return; }
+  const kind = $("cl-type").value;
+  const con  = parseFloat($("cl-con").value);
+  const strike = parseFloat($("cl-strike").value);
+  const openP  = parseFloat($("cl-open").value);
+  const closeP = parseFloat($("cl-close").value);
+  const manual = parseFloat($("cl-net").value);
+  const comm = CONFIG.COMMISSION_PER_LEG;
+
+  let pnl, desc;
+  if(isFinite(manual)){
+    pnl = manual;
+    desc = `${kind} ${isFinite(strike)?strike:""} — entered manually`.trim();
+  } else if(kind === "stock"){
+    if(!isFinite(con) || !isFinite(openP) || !isFinite(closeP)){
+      $("cl-note").textContent = "For shares: quantity, buy price and sell price."; return; }
+    pnl = (closeP - openP) * con;
+    desc = `sold ${con} shares bought at ${openP}, closed at ${closeP}`;
+  } else {
+    if(!isFinite(con) || !isFinite(openP)){
+      $("cl-note").textContent = "Contracts and premium received are required."; return; }
+    const cp = isFinite(closeP) ? closeP : 0;
+    const isShort = kind === "call" || kind === "put";
+    pnl = (isShort ? (openP - cp*100) : (cp*100 - openP)) * con - comm*con*2;
+    desc = `${isShort?"short":"long"} ${kind.replace("long","")} ${isFinite(strike)?strike:""} x${con}, opened ${openP}, closed ${cp}`;
+  }
+  REAL.push({ date: $("cl-date").value || new Date().toISOString().slice(0,10),
+              sym, desc, pnl:+pnl.toFixed(2) });
+  saveState();
+  $("closedmodal").classList.remove("on");
+  refresh();
+  toast(`recorded ${pnl>=0?"+":""}${fmtUSD(pnl)} on ${sym}`);
 };
 
 $("pos-import").onclick = () => $("pos-file").click();
