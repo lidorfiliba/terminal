@@ -248,7 +248,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 21</span>
+    <span class="pill" id="st-build">BUILD 22</span>
     <span class="pill" id="st-calls">API 0</span>
     <span class="pill" id="st-age">never synced</span>
     <button class="hbtn" id="st-sync">sync now</button>
@@ -735,29 +735,57 @@ function occSymbol(leg){
 async function fetchEarnings(syms){
   const out = {};
   S.earningsErr = {};
+  const today = new Date().toISOString().slice(0,10);
+
   for(const s of syms){
-    let lastErr = null;
-    try{
-      if(keyed()){
+    const tried = [];
+
+    // Source 1: FMP. Each source is isolated so one failure cannot stop the next.
+    if(keyed()){
+      try{
         API_CALLS++;
         const j = await getJSON(`${FMP}/earnings?symbol=${s}&apikey=${CONFIG.FMP_KEY}`);
         const rows = (j||[]).filter(r=>r.date).sort((a,b)=>a.date<b.date?-1:1);
-        const today = new Date().toISOString().slice(0,10);
         const next = rows.find(r=>r.date >= today);
-        if(next){ out[s] = { date: next.date, eps: next.epsEstimated ?? null }; continue; }
-        lastErr = "FMP returned no future date";
-      }
-      if(mdKeyed()){
+        if(next){ out[s] = { date: next.date, eps: next.epsEstimated ?? null, src:"FMP" }; continue; }
+        tried.push("FMP: no future date");
+      }catch(e){ tried.push("FMP: " + e.message.slice(0,60)); }
+    }
+
+    // Source 2: Market Data.
+    if(mdKeyed()){
+      try{
         API_CALLS++;
         const j = await getJSON(`${MD}/stocks/earnings/${s}/?token=${CONFIG.MD_KEY}`);
         if(j.s === "ok" && j.reportDate?.length){
-          const today = Math.floor(Date.now()/1000);
-          const i = j.reportDate.findIndex(d=>d >= today);
-          if(i >= 0) out[s] = { date: new Date(j.reportDate[i]*1000).toISOString().slice(0,10), eps:null };
+          const now = Math.floor(Date.now()/1000);
+          const i = j.reportDate.findIndex(d => d >= now);
+          if(i >= 0){
+            out[s] = { date: new Date(j.reportDate[i]*1000).toISOString().slice(0,10),
+                       eps: j.estimated?.[i] ?? null, src:"Market Data" };
+            continue;
+          }
         }
-      }
-      if(!out[s]) S.earningsErr[s] = lastErr || "no upcoming date returned";
-    }catch(e){ S.earningsErr[s] = e.message; }
+        tried.push("Market Data: no future date");
+      }catch(e){ tried.push("Market Data: " + e.message.slice(0,60)); }
+    }
+
+    // Source 3: Twelve Data.
+    if(tdKeyed()){
+      try{
+        API_CALLS++;
+        const j = await getJSON(`${TD}/earnings?symbol=${s}&outputsize=8&apikey=${CONFIG.TD_KEY}`);
+        const rows = (j.earnings || (Array.isArray(j) ? j : [])).filter(r=>r.date);
+        const future = rows.filter(r=>r.date >= today).sort((a,b)=>a.date<b.date?-1:1);
+        if(future.length){
+          out[s] = { date: future[0].date, eps: future[0].eps_estimate ?? null, src:"Twelve Data" };
+          continue;
+        }
+        tried.push("Twelve Data: no future date");
+      }catch(e){ tried.push("Twelve Data: " + e.message.slice(0,60)); }
+    }
+
+    S.earningsErr[s] = tried.length ? tried.join(" | ") : "no data source configured";
   }
   return out;
 }
@@ -1357,7 +1385,7 @@ function renderOpt(){
   h2 += `</tbody></table>`;
   const syms3 = [...new Set(legs.map(l=>l.sym))];
   const earn = syms3.map(s=>{
-    if(S.earnings[s]) return `<b>${s} reports ${S.earnings[s].date}</b>`;
+    if(S.earnings[s]) return `<b>${s} reports ${S.earnings[s].date}</b><span class="dim"> (${S.earnings[s].src||"?"})</span>`;
     const err = (S.earningsErr||{})[s];
     return `<span class="down">${s} earnings date unavailable${err?" — "+err:""}</span>`;
   });
