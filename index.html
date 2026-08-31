@@ -164,7 +164,8 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 3</span>
+    <span class="pill" id="st-build">BUILD 4</span>
+    <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
     <span id="st-sym" class="pill">RKLB</span>
@@ -242,8 +243,11 @@ const CONFIG = {
   // Financial Modeling Prep key. Empty string = DEMO mode (synthetic data).
   // You can also set it at runtime:  KEY your_key_here
   FMP_KEY: "",
-  REFRESH_SECONDS: 60,
-  WATCHLIST: ["RKLB","AMD","SPY","QQQ","NVDA","SPCX","TSLA"],
+  // Free FMP plans have a small daily call quota. Each refresh costs roughly
+  // one call per watchlist symbol, plus history, news and macro.
+  // 900s with a short watchlist keeps a day of use inside a free quota.
+  REFRESH_SECONDS: 900,
+  WATCHLIST: ["RKLB","SPY","QQQ"],
   DEFAULT_SYMBOL: "RKLB",
 };
 
@@ -324,27 +328,40 @@ function demoHistory(sym){
   return out;
 }
 
+let API_CALLS = 0;
+
 async function fetchQuotes(syms){
   if(!keyed()){ const o={}; syms.forEach(s=>o[s]=demoQuote(s)); return o; }
-  const j = await getJSON(`${FMP}/batch-quote?symbols=${syms.join(",")}&apikey=${CONFIG.FMP_KEY}`);
   const o = {};
-  (j||[]).forEach(q => o[q.symbol] = {
-    price:q.price, chg:q.change,
-    chgPct: q.changePercentage ?? q.changesPercentage,
-    name:q.name, dayLow:q.dayLow, dayHigh:q.dayHigh,
-    vol:q.volume, avgVol:q.avgVolume,
-    y52h:q.yearHigh, y52l:q.yearLow, mcap:q.marketCap, demo:false
-  });
+  let firstError = null;
+  for(const s of syms){
+    try{
+      API_CALLS++;
+      const j = await getJSON(`${FMP}/quote?symbol=${s}&apikey=${CONFIG.FMP_KEY}`);
+      const q = Array.isArray(j) ? j[0] : j;
+      if(!q || q.price == null) continue;
+      o[s] = {
+        price:q.price, chg:q.change,
+        chgPct: q.changePercentage ?? q.changesPercentage,
+        name:q.name, dayLow:q.dayLow, dayHigh:q.dayHigh,
+        vol:q.volume, avgVol:q.avgVolume,
+        y52h:q.yearHigh, y52l:q.yearLow, mcap:q.marketCap, demo:false
+      };
+    }catch(e){ if(!firstError) firstError = e; }
+  }
+  if(!Object.keys(o).length) throw (firstError || new Error("no quotes returned"));
   return o;
 }
 async function fetchHistory(sym){
   if(!keyed()) return demoHistory(sym);
+  API_CALLS++;
   const j = await getJSON(`${FMP}/historical-price-eod/light?symbol=${sym}&apikey=${CONFIG.FMP_KEY}`);
   const rows = Array.isArray(j) ? j : (j.historical || []);
   return rows.map(r=>({ d:r.date, c: r.price ?? r.close })).reverse().slice(-180);
 }
 async function fetchNews(syms){
   if(!keyed()) return [];
+  API_CALLS++;
   const j = await getJSON(`${FMP}/news/stock?symbols=${syms.join(",")}&limit=25&apikey=${CONFIG.FMP_KEY}`);
   return (j||[]).map(n=>({
     t:n.publishedDate, sym:n.symbol, title:n.title,
@@ -362,6 +379,7 @@ async function fetchMacro(){
   const out = [];
   for(const [name,label] of wanted){
     try{
+      API_CALLS++;
       const j = await getJSON(`${FMP}/economic-indicators?name=${name}&apikey=${CONFIG.FMP_KEY}`);
       const rows = (j||[]).slice(0,2);
       if(!rows.length) continue;
@@ -662,6 +680,7 @@ async function refresh(){
   const err = $("st-err");
   if(S.dataOk){ err.style.display = "none"; }
   else { err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + S.lastError; }
+  $("st-calls").textContent = "API " + API_CALLS;
 
   if(!S.history[S.sym]) await loadHistory();
   try{ S.news = await fetchNews(syms.slice(0,8)); }catch(e){ S.news=[]; }
