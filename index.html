@@ -234,7 +234,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 13</span>
+    <span class="pill" id="st-build">BUILD 15</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -423,6 +423,9 @@ const CONFIG = {
   MD_KEY: "",
   COMMISSION_PER_LEG: 1.80,   // your Sapphire cost per option leg
   COMMISSION_STOCK: 0,
+  // How long each feed stays fresh, in minutes. Nothing is refetched
+  // before its time is up, so editing the book costs zero API calls.
+  TTL: { quotes: 20, history: 720, news: 240, macro: 720, legs: 360 },
   // Free FMP plans have a small daily call quota. Each refresh costs roughly
   // one call per watchlist symbol, plus history, news and macro.
   // 900s with a short watchlist keeps a day of use inside a free quota.
@@ -477,7 +480,9 @@ async function saveState(){
   if(!PASS) return;
   try{
     store.set("ldr_vault", await seal(
-      { book:BOOK, real:REAL, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY }, PASS));
+      { book:BOOK, real:REAL, fmp:CONFIG.FMP_KEY, td:CONFIG.TD_KEY, md:CONFIG.MD_KEY,
+        cache:{ quotes:S.quotes, history:S.history, news:S.news, macro:S.macro,
+                legQuotes:S.legQuotes, ts:S.ts } }, PASS));
   }catch(e){ toast("could not save: " + e.message); }
 }
 
@@ -492,6 +497,7 @@ const S = {
   news: [],
   macro: [],
   legQuotes: {},
+  ts: {},            // feed -> when it was last fetched
   errors: {},        // panel -> message
   live: false,
   dataOk: false,
@@ -724,7 +730,15 @@ function riskFlags(groups){
   groups.forEach(g=>{
     const px = g.px;
     if(g.uncovered > 0){
-      f.push({lvl:"crit", txt:`${g.sym}: ${g.uncovered} shares of short-call exposure are uncovered. Loss above the strike is unbounded and grows one-for-one with the stock. Assignment on an uncovered leg forces you to buy at market.`});
+      const e = economics(g);
+      const up = e.breakevens.filter(b => g.px == null || b > g.px).sort((a,b)=>a-b)[0];
+      f.push({lvl:"crit", txt:`${g.sym}: ${g.uncovered} shares of short-call exposure are uncovered.${
+        up ? ` The position turns negative above ${up.toFixed(2)} and the loss grows by ${g.uncovered} dollars for every dollar past it, with no cap.` :
+             " Loss above the strike is unbounded and grows one-for-one with the stock."}`});
+      if(up && S.history[g.sym]){
+        const peak = Math.max(...S.history[g.sym].map(r=>r.c));
+        if(peak > up) f.push({lvl:"crit", txt:`${g.sym} traded as high as ${peak.toFixed(2)} within the last 180 sessions, above your ${up.toFixed(2)} break-even. A return to that level is a loss, not a capped gain.`});
+      }
     }
     g.legs.filter(l=>l.type!=="stock").forEach(l=>{
       const d = dte(l.expiry);
@@ -801,6 +815,21 @@ function economics(g){
     return v + totalPremium;
   };
 
+  // where the whole position crosses zero, found by scanning the price axis
+  const breakevens = [];
+  if(g.shares > 0 || openLegs.length){
+    const hi = Math.max(200, (g.px||100)*4);
+    let prev = payoffAt(0.01), prevP = 0.01;
+    for(let P = 0.5; P <= hi; P += 0.25){
+      const v = payoffAt(P);
+      if((prev < 0 && v >= 0) || (prev > 0 && v <= 0)){
+        const t = prev / (prev - v);
+        breakevens.push(+(prevP + t*(P - prevP)).toFixed(2));
+      }
+      prev = v; prevP = P;
+    }
+  }
+
   const strikes = [...new Set(openLegs.map(l=>l.strike))].sort((a,b)=>a-b);
   const top = strikes.length ? Math.max(...strikes) : (g.px || 0);
   const scenarios = [...new Set([
@@ -819,9 +848,11 @@ function economics(g){
   const shortCallShares = openLegs.filter(l=>l.type==="call"&&l.side==="short")
                                   .reduce((a,l)=>a+l.contracts*100,0);
 
+  const capped = strikes.length ? payoffAt(Math.max(...strikes)) : null;
+
   return { realized, openCredit, totalPremium, effBasis, sharesPnl, netNow,
            buybackCost, priced, openLegs:openLegs.length,
-           scenarios, yields, shortCallShares, payoffAt };
+           scenarios, yields, shortCallShares, payoffAt, breakevens, capped };
 }
 
 /* ============================================================
@@ -987,6 +1018,16 @@ function renderEcon(groups){
           <td colspan="2" class="dim" style="text-align:left">${
             isNow ? "everything expires worthless, you keep the premium" : ""}</td></tr>`;
       });
+      if(e.breakevens.length){
+        h2 += `<tr><td class="warn">break-even${e.breakevens.length>1?"s":""}</td>
+          <td class="warn">${e.breakevens.join("  /  ")}</td>
+          <td colspan="2" class="dim" style="text-align:left">where the whole position is flat</td></tr>`;
+      }
+      if(e.capped != null){
+        h2 += `<tr><td class="dim">most you can make</td>
+          <td class="up">${fmtUSD(e.capped)}</td>
+          <td colspan="2" class="dim" style="text-align:left">at or above the top strike, before it starts falling</td></tr>`;
+      }
       h2 += `</tbody></table>
         <div class="empty" style="padding:2px">Shares marked to that price, every short leg paid out at intrinsic value, all premium included. ${
           e.shortCallShares > g.shares
@@ -1021,7 +1062,7 @@ function renderEcon(groups){
   }
   $("econ-body").innerHTML = h2;
   $("econ-body").querySelectorAll("button[data-delreal]").forEach(b=>{
-    b.onclick = () => { REAL.splice(+b.dataset.delreal,1); saveState(); refresh(); };
+    b.onclick = () => { REAL.splice(+b.dataset.delreal,1); saveState(); rerender(); };
   });
 }
 
@@ -1127,7 +1168,8 @@ function selectSymbol(sym){
   $("st-sym").textContent = S.sym;
   if(!CONFIG.WATCHLIST.includes(S.sym)) CONFIG.WATCHLIST.unshift(S.sym);
   renderMonitor();
-  loadHistory().then(renderChart);
+  if(S.history[S.sym] && fresh("history", S.sym)) renderChart();
+  else loadHistory().then(()=>{ stamp("history", S.sym); renderChart(); });
 }
 
 async function loadHistory(){
@@ -1135,30 +1177,18 @@ async function loadHistory(){
   catch(e){ S.history[S.sym] = null; toast("history failed for "+S.sym+": "+e.message); }
 }
 
-async function refresh(){
-  const syms = Array.from(new Set([...CONFIG.WATCHLIST, ...BOOK.map(b=>b.sym), S.sym]));
+function fresh(feed, key){
+  const t = key ? (S.ts[feed]||{})[key] : S.ts[feed];
+  if(!t) return false;
+  return (Date.now() - t) < CONFIG.TTL[feed]*60000;
+}
+function stamp(feed, key){
+  if(key){ S.ts[feed] = S.ts[feed] || {}; S.ts[feed][key] = Date.now(); }
+  else S.ts[feed] = Date.now();
+}
 
-  if(anyKey()){
-    try{
-      const q = await fetchQuotes(syms);
-      if(!q || !Object.keys(q).length) throw new Error("provider returned an empty response");
-      S.quotes = q; S.dataOk = true; S.stale = false; S.lastError = null;
-    }catch(e){
-      S.lastError = e.message;
-      const hadReal = Object.values(S.quotes).some(q=>q && q.demo === false);
-      if(hadReal){
-        S.stale = true;                      // rate limit or a blip: hold the last real prices
-      } else {
-        S.dataOk = false; S.stale = false;
-        syms.forEach(s=>S.quotes[s]=demoQuote(s));
-      }
-    }
-  } else {
-    S.dataOk = false; S.lastError = "no API key set";
-    syms.forEach(s=>S.quotes[s]=demoQuote(s));
-  }
-  S.live = S.dataOk;
-
+/* Draw everything from what is already in memory. Costs nothing. */
+function rerender(){
   const mode = $("st-mode");
   mode.textContent = S.dataOk ? "LIVE" : "DEMO";
   mode.className = "pill gear " + (S.dataOk ? "live" : "demo");
@@ -1167,14 +1197,11 @@ async function refresh(){
   else if(S.stale){
     err.style.display = ""; err.textContent = "LAST GOOD PRICES, NOT REFRESHED — " + S.lastError;
   } else {
-    err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + S.lastError;
+    err.style.display = ""; err.textContent = "SYNTHETIC DATA — " + (S.lastError||"no key");
   }
   $("st-calls").textContent = "API " + API_CALLS;
-
-  if(!S.history[S.sym]) await loadHistory();
-  try{ S.news = await fetchNews(syms.slice(0,8)); }catch(e){ S.news=[]; }
-  try{ S.macro = await fetchMacro(); }catch(e){ S.macro=[]; }
-  try{ S.legQuotes = await fetchLegQuotes(BOOK.filter(l=>l.type!=="stock")); }catch(e){ S.legQuotes={}; }
+  const age = S.ts.quotes ? Math.round((Date.now()-S.ts.quotes)/60000) : null;
+  $("st-age").textContent = age == null ? "never synced" : age + "m old";
 
   const groups = analyseBook(BOOK, S.quotes);
   renderPositions(groups);
@@ -1185,6 +1212,49 @@ async function refresh(){
   renderMacro();
   renderOpt();
   renderNews();
+}
+
+/* Fetch only the feeds whose lifetime has expired. force=true ignores them. */
+async function refresh(force){
+  const syms = Array.from(new Set([...CONFIG.WATCHLIST, ...BOOK.map(b=>b.sym), S.sym]));
+
+  if(!anyKey()){
+    S.dataOk = false; S.stale = false; S.lastError = "no API key set";
+    syms.forEach(s=>S.quotes[s]=demoQuote(s));
+    rerender(); return;
+  }
+
+  if(force || !fresh("quotes")){
+    try{
+      const q = await fetchQuotes(syms);
+      if(!q || !Object.keys(q).length) throw new Error("provider returned an empty response");
+      S.quotes = q; S.dataOk = true; S.stale = false; S.lastError = null; stamp("quotes");
+    }catch(e){
+      S.lastError = e.message;
+      const hadReal = Object.values(S.quotes).some(q=>q && q.demo === false);
+      if(hadReal){ S.stale = true; }
+      else { S.dataOk = false; S.stale = false; syms.forEach(s=>S.quotes[s]=demoQuote(s)); }
+    }
+  }
+
+  if(force || !S.history[S.sym] || !fresh("history", S.sym)){
+    try{ S.history[S.sym] = await fetchHistory(S.sym); stamp("history", S.sym); }
+    catch(e){ toast("history failed for "+S.sym+": "+e.message); }
+  }
+  if(force || !fresh("news")){
+    try{ S.news = await fetchNews(syms.slice(0,8)); stamp("news"); }catch(e){}
+  }
+  if(force || !fresh("macro")){
+    try{ const m = await fetchMacro(); if(m.length){ S.macro = m; stamp("macro"); } }catch(e){}
+  }
+  const legs = BOOK.filter(l=>l.type!=="stock");
+  const known = legs.every(l=>S.legQuotes[l.id]);
+  if(legs.length && (force || !known || !fresh("legs"))){
+    try{ S.legQuotes = { ...S.legQuotes, ...await fetchLegQuotes(legs) }; stamp("legs"); }catch(e){}
+  }
+
+  rerender();
+  saveState();
 }
 
 /* ============================================================
@@ -1344,7 +1414,7 @@ $("leg-close").onclick = () => {
   BOOK = BOOK.filter(b=>b.id !== EDIT_ID);
   saveState();
   CLOSING = false;
-  closeLeg(); refresh();
+  closeLeg(); rerender();
   toast(`closed: ${pnl>=0?"+":""}${fmtUSD(pnl)} recorded`);
 };
 
@@ -1352,7 +1422,7 @@ $("leg-del").onclick = () => {
   if(!EDIT_ID) return;
   BOOK = BOOK.filter(b=>b.id !== EDIT_ID);
   saveState();
-  closeLeg(); refresh();
+  closeLeg(); rerender();
 };
 
 $("leg-save").onclick = () => {
@@ -1428,7 +1498,7 @@ $("cl-save").onclick = () => {
               sym, desc, pnl:+pnl.toFixed(2) });
   saveState();
   $("closedmodal").classList.remove("on");
-  refresh();
+  rerender();
   toast(`recorded ${pnl>=0?"+":""}${fmtUSD(pnl)} on ${sym}`);
 };
 
@@ -1445,7 +1515,7 @@ $("pos-file").onchange = e => {
       BOOK = parsed.map((l,i)=>({ ...l, id: l.id || ((l.type==="stock"?"e":"o")+i+Date.now()) }));
       saveState();
       toast("loaded " + BOOK.length + " lines");
-      refresh();
+      rerender();
     }catch(err){ toast("could not read that file: " + err.message); }
   };
   r.readAsText(f);
@@ -1527,6 +1597,15 @@ async function attemptUnlock(){
     CONFIG.FMP_KEY = data.fmp || "";
     CONFIG.TD_KEY  = data.td  || "";
     CONFIG.MD_KEY  = data.md  || "";
+    if(data.cache){
+      S.quotes    = data.cache.quotes    || {};
+      S.history   = data.cache.history   || {};
+      S.news      = data.cache.news      || [];
+      S.macro     = data.cache.macro     || [];
+      S.legQuotes = data.cache.legQuotes || {};
+      S.ts        = data.cache.ts        || {};
+      if(Object.values(S.quotes).some(q=>q && q.demo === false)) S.dataOk = true;
+    }
     if(hashVault()){ await saveState(); history.replaceState(null,"",location.pathname); }
     $("lock").classList.remove("on");
     if(!anyKey()) openSetup();
@@ -1540,8 +1619,14 @@ $("lock-go").onclick = attemptUnlock;
 $("lock-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") attemptUnlock(); });
 $("lock-pass2").addEventListener("keydown", e=>{ if(e.key==="Enter") attemptUnlock(); });
 
+$("st-sync").onclick = () => { if(PASS) refresh(true); };
+
 tick(); setInterval(tick, 1000);
-setInterval(()=>{ if(PASS) refresh(); }, CONFIG.REFRESH_SECONDS*1000);
+setInterval(()=>{
+  if(!PASS) return;
+  if(document.hidden) return;          // no traffic while the tab is in the background
+  refresh();
+}, 60000);                             // checks once a minute, fetches only what expired
 
 if(hashVault() || store.get("ldr_vault", null)) showLock("unlock");
 else showLock("create");
