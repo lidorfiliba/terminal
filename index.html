@@ -167,7 +167,7 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 5</span>
+    <span class="pill" id="st-build">BUILD 6</span>
     <span class="pill" id="st-calls">API 0</span>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
@@ -228,8 +228,9 @@ canvas{display:block;width:100%;height:100%}
   <div class="box">
     <h3>Data source</h3>
     <div class="in">
-      <p>Paste your Financial Modeling Prep key to switch from synthetic demo data to live quotes, history and headlines. It stays on this device and is never sent anywhere except to the data provider.</p>
-      <input id="setup-key" type="text" autocomplete="off" spellcheck="false" placeholder="paste key here">
+      <p>Twelve Data covers every US symbol for quotes and charts on its free plan. Financial Modeling Prep supplies macro and headlines. Set either or both; keys stay on this device.</p>
+      <input id="setup-tdkey" type="text" autocomplete="off" spellcheck="false" placeholder="Twelve Data key — quotes and charts">
+      <input id="setup-key" type="text" autocomplete="off" spellcheck="false" placeholder="FMP key — macro and headlines" style="margin-top:8px">
       <div class="btns">
         <button id="setup-save">Use live data</button>
         <button id="setup-demo" class="ghost">Stay in demo</button>
@@ -246,6 +247,9 @@ const CONFIG = {
   // Financial Modeling Prep key. Empty string = DEMO mode (synthetic data).
   // You can also set it at runtime:  KEY your_key_here
   FMP_KEY: "",
+  // Twelve Data key. Free plan covers all US symbols for quotes and history.
+  // When set, quotes and charts come from Twelve Data; macro stays on FMP.
+  TD_KEY: "",
   // Free FMP plans have a small daily call quota. Each refresh costs roughly
   // one call per watchlist symbol, plus history, news and macro.
   // 900s with a short watchlist keeps a day of use inside a free quota.
@@ -273,6 +277,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 };
 CONFIG.FMP_KEY = store.get("ldr_key", CONFIG.FMP_KEY);
+CONFIG.TD_KEY  = store.get("ldr_tdkey", CONFIG.TD_KEY);
 BOOK = store.get("ldr_book", BOOK);
 
 /* ============================================================
@@ -298,8 +303,11 @@ const S = {
    move to Polygon / ORATS / Databento without touching the UI.
    ============================================================ */
 const FMP = "https://financialmodelingprep.com/stable";
+const TD  = "https://api.twelvedata.com";
 
 function keyed(){ return CONFIG.FMP_KEY && CONFIG.FMP_KEY.length > 8; }
+function tdKeyed(){ return CONFIG.TD_KEY && CONFIG.TD_KEY.length > 8; }
+function anyKey(){ return keyed() || tdKeyed(); }
 
 async function getJSON(url){
   const r = await fetch(url);
@@ -336,9 +344,40 @@ let API_CALLS = 0;
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
 async function fetchQuotes(syms){
-  if(!keyed()){ const o={}; syms.forEach(s=>o[s]=demoQuote(s)); return o; }
-  const o = {};
+  if(!anyKey()){ const o={}; syms.forEach(s=>o[s]=demoQuote(s)); return o; }
   S.quoteErrors = {};
+  if(tdKeyed()) return fetchQuotesTD(syms);
+  return fetchQuotesFMP(syms);
+}
+
+/* --- Twelve Data: one batched call, all US symbols on the free plan --- */
+async function fetchQuotesTD(syms){
+  API_CALLS++;
+  const j = await getJSON(`${TD}/quote?symbol=${syms.join(",")}&apikey=${CONFIG.TD_KEY}`);
+  if(j.status === "error") throw new Error(j.message || "Twelve Data error");
+  const rows = (syms.length === 1) ? { [syms[0]]: j } : j;
+  const o = {};
+  syms.forEach(s=>{
+    const q = rows[s];
+    if(!q || q.status === "error"){ S.quoteErrors[s] = (q && q.message) || "not returned"; return; }
+    const price = parseFloat(q.close);
+    if(!isFinite(price)){ S.quoteErrors[s] = "no close price"; return; }
+    o[s] = {
+      price, chg: parseFloat(q.change), chgPct: parseFloat(q.percent_change),
+      name: q.name, dayLow: parseFloat(q.low), dayHigh: parseFloat(q.high),
+      vol: parseFloat(q.volume), avgVol: parseFloat(q.average_volume),
+      y52h: q.fifty_two_week ? parseFloat(q.fifty_two_week.high) : null,
+      y52l: q.fifty_two_week ? parseFloat(q.fifty_two_week.low) : null,
+      demo: false
+    };
+  });
+  if(!Object.keys(o).length) throw new Error(S.quoteErrors[syms[0]] || "no quotes returned");
+  return o;
+}
+
+/* --- FMP fallback: one call per symbol, symbol whitelist applies on free plans --- */
+async function fetchQuotesFMP(syms){
+  const o = {};
   let firstError = null, i = 0;
   for(const s of syms){
     if(i++) await sleep(300);          // free plans rate-limit rapid bursts
@@ -363,7 +402,13 @@ async function fetchQuotes(syms){
   return o;
 }
 async function fetchHistory(sym){
-  if(!keyed()) return demoHistory(sym);
+  if(!anyKey()) return demoHistory(sym);
+  if(tdKeyed()){
+    API_CALLS++;
+    const j = await getJSON(`${TD}/time_series?symbol=${sym}&interval=1day&outputsize=180&apikey=${CONFIG.TD_KEY}`);
+    if(j.status === "error") throw new Error(j.message || "Twelve Data error");
+    return (j.values||[]).map(r=>({ d:r.datetime, c:parseFloat(r.close) })).reverse();
+  }
   API_CALLS++;
   const j = await getJSON(`${FMP}/historical-price-eod/light?symbol=${sym}&apikey=${CONFIG.FMP_KEY}`);
   const rows = Array.isArray(j) ? j : (j.historical || []);
@@ -669,7 +714,7 @@ async function loadHistory(){
 async function refresh(){
   const syms = Array.from(new Set([...CONFIG.WATCHLIST, ...BOOK.map(b=>b.sym), S.sym]));
 
-  if(keyed()){
+  if(anyKey()){
     try{
       const q = await fetchQuotes(syms);
       if(!q || !Object.keys(q).length) throw new Error("provider returned an empty response");
@@ -711,7 +756,8 @@ async function refresh(){
    ============================================================ */
 const HELP = [
   "TICKER            load a symbol into the chart and monitor",
-  "KEY <apikey>      switch to live data (Financial Modeling Prep)",
+  "TD <apikey>       Twelve Data key — quotes and charts",
+  "KEY <apikey>      FMP key — macro and headlines",
   "DEMO              clear the key and go back to synthetic data",
   "ADD STOCK SYM QTY AVG",
   "ADD CALL|PUT SYM SHORT|LONG CONTRACTS STRIKE YYYY-MM-DD CREDIT",
@@ -725,8 +771,9 @@ function runCommand(raw){
   const c = p[0].toUpperCase();
 
   if(c==="HELP"){ toast(HELP.join("  |  ")); console.log(HELP.join("\n")); return; }
-  if(c==="KEY"){ CONFIG.FMP_KEY=p[1]||""; store.set("ldr_key",CONFIG.FMP_KEY); toast("key set, switching to live"); refresh(); return; }
-  if(c==="DEMO"){ CONFIG.FMP_KEY=""; store.set("ldr_key",""); toast("demo mode"); refresh(); return; }
+  if(c==="KEY"){ CONFIG.FMP_KEY=p[1]||""; store.set("ldr_key",CONFIG.FMP_KEY); toast("FMP key set"); refresh(); return; }
+  if(c==="TD"){ CONFIG.TD_KEY=p[1]||""; store.set("ldr_tdkey",CONFIG.TD_KEY); toast("Twelve Data key set"); refresh(); return; }
+  if(c==="DEMO"){ CONFIG.FMP_KEY=""; CONFIG.TD_KEY=""; store.set("ldr_key",""); store.set("ldr_tdkey",""); toast("demo mode"); refresh(); return; }
   if(c==="R"){ refresh(); return; }
   if(c==="BOOK"){ console.log(JSON.stringify(BOOK,null,2)); toast("book printed to console"); return; }
   if(c==="RESET"){ try{localStorage.removeItem("ldr_book");}catch(e){} toast("reload the page to restore the seeded book"); return; }
@@ -764,16 +811,18 @@ window.addEventListener("resize", ()=>renderChart());
    ============================================================ */
 function openSetup(){
   $("setup-key").value = CONFIG.FMP_KEY || "";
+  $("setup-tdkey").value = CONFIG.TD_KEY || "";
   $("setup").classList.add("on");
-  setTimeout(()=>$("setup-key").focus(), 50);
+  setTimeout(()=>$("setup-tdkey").focus(), 50);
 }
 function closeSetup(){ $("setup").classList.remove("on"); }
 
 $("setup-save").onclick = () => {
-  const k = $("setup-key").value.trim();
-  if(k.length < 8){ toast("that key looks too short — check for a missing character"); return; }
-  CONFIG.FMP_KEY = k;
-  store.set("ldr_key", k);
+  const fk = $("setup-key").value.trim();
+  const tk = $("setup-tdkey").value.trim();
+  if(fk.length < 8 && tk.length < 8){ toast("enter at least one key"); return; }
+  CONFIG.FMP_KEY = fk; CONFIG.TD_KEY = tk;
+  store.set("ldr_key", fk); store.set("ldr_tdkey", tk);
   closeSetup();
   toast("switching to live data");
   refresh();
@@ -787,7 +836,7 @@ $("setup-key").addEventListener("keydown", e=>{ if(e.key==="Enter") $("setup-sav
    11. BOOT
    ============================================================ */
 tick(); setInterval(tick, 1000);
-if(!keyed()) openSetup();
+if(!anyKey()) openSetup();
 refresh();
 setInterval(refresh, CONFIG.REFRESH_SECONDS*1000);
 </script>
