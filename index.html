@@ -234,8 +234,10 @@ canvas{display:block;width:100%;height:100%}
 
   <div id="statusbar">
     <span class="brand">LDR&nbsp;TERMINAL</span>
-    <span class="pill" id="st-build">BUILD 15</span>
+    <span class="pill" id="st-build">BUILD 16</span>
     <span class="pill" id="st-calls">API 0</span>
+    <span class="pill" id="st-age">never synced</span>
+    <button class="hbtn" id="st-sync">sync now</button>
     <span id="st-mode" class="pill demo gear" title="tap to set your API key">DEMO</span>
     <span id="st-mkt" class="pill">MKT —</span>
     <span id="st-sym" class="pill">RKLB</span>
@@ -858,7 +860,15 @@ function economics(g){
 /* ============================================================
    7. RENDER
    ============================================================ */
-const $ = id => document.getElementById(id);
+const $ = id => document.getElementById(id) || {
+  // a missing node must not take the whole render down with it
+  style:{}, classList:{add(){},remove(){}}, querySelectorAll:()=>[],
+  addEventListener(){}, focus(){}, click(){},
+  set textContent(v){}, get textContent(){return "";},
+  set innerHTML(v){}, get innerHTML(){return "";},
+  set value(v){}, get value(){return "";},
+  set onclick(v){}, set onchange(v){}
+};
 const fmtUSD = n => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:0});
 const sgn = n => n>0?"up":n<0?"down":"dim";
 const arrow = n => n>0?"▲":n<0?"▼":" ";
@@ -1189,6 +1199,14 @@ function stamp(feed, key){
 
 /* Draw everything from what is already in memory. Costs nothing. */
 function rerender(){
+  try{ rerenderInner(); }
+  catch(err){
+    const e = document.getElementById("st-err");
+    if(e){ e.style.display=""; e.textContent = "RENDER ERROR — " + err.message; }
+    console.error(err);
+  }
+}
+function rerenderInner(){
   const mode = $("st-mode");
   mode.textContent = S.dataOk ? "LIVE" : "DEMO";
   mode.className = "pill gear " + (S.dataOk ? "live" : "demo");
@@ -1311,6 +1329,10 @@ document.addEventListener("keydown", e=>{
   if(e.key==="/" && document.activeElement!==$("cmd")){ e.preventDefault(); $("cmd").focus(); }
 });
 window.addEventListener("resize", ()=>renderChart());
+window.addEventListener("error", ev=>{
+  const e = document.getElementById("st-err");
+  if(e){ e.style.display=""; e.textContent = "SCRIPT ERROR — " + ev.message; }
+});
 
 /* ============================================================
    10. SETTINGS OVERLAY — set the key without editing the file
